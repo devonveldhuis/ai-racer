@@ -93,6 +93,17 @@ export interface ChaseCameraConfig {
   fov: number;
 }
 
+export interface RaceConfig {
+  /** Laps to finish. */
+  laps: number;
+  /** Seconds per countdown tick (3, 2, 1, GO). */
+  countdownStepSeconds: number;
+  /** Seconds added to the race time for every reset. */
+  resetPenaltySeconds: number;
+  /** A car upside down (chassis up y < 0.3) for this long is reset. */
+  flipResetSeconds: number;
+}
+
 export interface GameConfig {
   /** Track / RNG seed. */
   seed: number;
@@ -105,6 +116,7 @@ export interface GameConfig {
   /** Keyboard ramp rates (units per second) and chase camera tuning. */
   keyboard: KeyboardConfig;
   camera: ChaseCameraConfig;
+  race: RaceConfig;
   /** Show debug overlays. */
   debug: boolean;
   /** Fixed physics rate in Hz. */
@@ -143,6 +155,7 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
     topDownHeight: 45,
     fov: 60,
   },
+  race: { laps: 1, countdownStepSeconds: 1, resetPenaltySeconds: 2, flipResetSeconds: 2 },
   debug: false,
   physicsHz: 60,
   maxSubSteps: 5,
@@ -200,7 +213,7 @@ function parseBool(v: string): boolean | undefined {
 }
 
 /**
- * Reads `seed`, `controller`, `mode` (control mode) and `debug` query params over the defaults.
+ * Reads `seed`, `controller`, `mode` (control mode), `laps` and `debug` query params over the defaults.
  * Invalid values are ignored (the default is kept).
  */
 export function parseUrlOverrides(
@@ -226,6 +239,12 @@ export function parseUrlOverrides(
   if (mode !== null) {
     const m = mode.trim().toLowerCase();
     if (m === 'realtime' || m === 'lockstep') config.controlMode = m;
+  }
+
+  const laps = params.get('laps');
+  if (laps !== null && /^\d+$/.test(laps.trim())) {
+    const n = Number(laps.trim());
+    if (Number.isSafeInteger(n) && n >= 1) config.race = { ...base.race, laps: n };
   }
 
   const debug = params.get('debug');

@@ -37,6 +37,13 @@ describe('parseUrlOverrides', () => {
     expect(parseUrlOverrides('?seed=1.5').seed).toBe(DEFAULT_CONFIG.seed);
   });
 
+  it('parses laps and ignores invalid values', () => {
+    expect(parseUrlOverrides('?laps=3').race).toEqual({ ...DEFAULT_CONFIG.race, laps: 3 });
+    expect(parseUrlOverrides('?laps=0').race.laps).toBe(DEFAULT_CONFIG.race.laps);
+    expect(parseUrlOverrides('?laps=x').race.laps).toBe(DEFAULT_CONFIG.race.laps);
+    expect(parseUrlOverrides('?laps=2.5').race.laps).toBe(DEFAULT_CONFIG.race.laps);
+  });
+
   it('leaves unrelated config fields untouched', () => {
     const c = parseUrlOverrides('?seed=9');
     expect(c.physicsHz).toBe(60);

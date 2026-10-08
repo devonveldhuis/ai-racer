@@ -1,0 +1,41 @@
+/** Game-level keys (not driving): reset, pause, restart, new track, camera. */
+
+export interface GameKeyHandlers {
+  reset(): void;
+  pause(): void;
+  restart(): void;
+  newTrack(): void;
+  cycleCamera(): void;
+}
+
+/** The part of `Window` the keys need; lets tests pass a fake. */
+export interface KeyTarget {
+  addEventListener(type: 'keydown', fn: (e: KeyboardEvent) => void): void;
+  removeEventListener(type: 'keydown', fn: (e: KeyboardEvent) => void): void;
+}
+
+/** Installs the key handlers on `target`; returns a function that removes them. */
+export function installGameKeys(handlers: GameKeyHandlers, target: KeyTarget = window): () => void {
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+    switch (e.key.toLowerCase()) {
+      case 'r':
+        handlers.reset();
+        break;
+      case 'c':
+        handlers.cycleCamera();
+        break;
+      case 'escape':
+        handlers.pause();
+        break;
+      case 'enter':
+        handlers.restart();
+        break;
+      case 'n':
+        handlers.newTrack();
+        break;
+    }
+  };
+  target.addEventListener('keydown', onKeyDown);
+  return () => target.removeEventListener('keydown', onKeyDown);
+}
