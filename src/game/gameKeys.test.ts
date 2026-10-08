@@ -32,6 +32,7 @@ function handlers(): GameKeyHandlers {
     restart: vi.fn(),
     newTrack: vi.fn(),
     cycleCamera: vi.fn(),
+    toggleHelp: vi.fn(),
   };
 }
 
@@ -46,12 +47,14 @@ describe('installGameKeys', () => {
     f.press('Enter');
     f.press('n');
     f.press('c');
+    f.press('h');
     f.press('x');
     expect(h.reset).toHaveBeenCalledTimes(2);
     expect(h.pause).toHaveBeenCalledTimes(1);
     expect(h.restart).toHaveBeenCalledTimes(1);
     expect(h.newTrack).toHaveBeenCalledTimes(1);
     expect(h.cycleCamera).toHaveBeenCalledTimes(1);
+    expect(h.toggleHelp).toHaveBeenCalledTimes(1);
   });
 
   it('ignores repeats and modified keys', () => {

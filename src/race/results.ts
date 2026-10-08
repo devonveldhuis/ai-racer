@@ -35,3 +35,20 @@ export function getResults(): readonly RaceResult[] {
 export function clearResults(): void {
   results.length = 0;
 }
+
+/**
+ * The lowest `totalTime` on `seed`, or `null` if there is none. `exclude` leaves one result out
+ * (the one just finished, to get the previous best); `list` defaults to the in-memory results.
+ */
+export function bestTimeForSeed(
+  seed: number,
+  exclude?: RaceResult,
+  list: readonly RaceResult[] = results,
+): number | null {
+  let best: number | null = null;
+  for (const r of list) {
+    if (r.seed !== seed || r === exclude) continue;
+    if (best === null || r.totalTime < best) best = r.totalTime;
+  }
+  return best;
+}

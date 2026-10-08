@@ -14,13 +14,22 @@ import { createController } from '../control/registry';
 import { buildObservation, type CarController } from '../control/types';
 import type { ControllerKind, GameConfig } from '../core/config';
 import { GameLoop } from '../core/loop';
+import { TILE_CATALOG } from '../assets/tiles';
+import { preloadModels } from '../assets/loader';
+import { Dust } from '../fx/Dust';
 import { Race, startPoseMetres } from '../race/Race';
 import { recordResult } from '../race/results';
 import { buildTrack, type BuiltTrack } from '../track/builder';
 import { generateTrack } from '../track/generator';
+import { Hud, type HudSnapshot } from '../ui/Hud';
+import { DisposeStack } from './DisposeStack';
 import { installGameKeys } from './gameKeys';
 
 const MAX_FRAME_DT = 0.1;
+
+function errorMessage(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
 
 export interface GameHandle {
   /** Stops the loop, removes listeners and DOM elements and frees the renderer and world. */
@@ -36,12 +45,9 @@ interface Session {
   host: ControllerHost;
   chase: ChaseCamera;
   race: Race;
+  dust: Dust;
   simTime: number;
   dispose(): void;
-}
-
-function formatTime(t: number): string {
-  return `${t.toFixed(2)} s`;
 }
 
 export async function runGame(config: GameConfig): Promise<GameHandle> {
@@ -56,6 +62,14 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
   world.timestep = 1 / config.physicsHz;
   const camera = new THREE.PerspectiveCamera(config.camera.fov, 1, 0.1, 3000);
+
+  const hud = new Hud({
+    actions: {
+      restart: () => void rebuild(seed),
+      newTrack: () => void rebuild(Math.floor(Math.random() * 1e9)),
+    },
+    neutral: config.car.neutral,
+  });
 
   let disposed = false;
   let session: Session | null = null;
@@ -83,53 +97,84 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
   };
 
   const buildSession = async (newSeed: number): Promise<Session> => {
-    const layout = generateTrack(newSeed);
-    const race = new Race({
-      layout,
-      worldScale: S,
-      config: config.race,
-      controller: config.controller,
-    });
-    race.beginGenerating();
-    const track = await buildTrack(layout, scene, world, {
-      worldScale: S,
-      margin: config.trackMargin,
-      outOfBoundsY: config.outOfBoundsY,
-    });
-    const car = new CarPhysics(world, config, track.surfaceAt);
-    const view = await CarView.create(car, config);
-    scene.add(view.root);
-    const controller = createController(config.controller, { config });
-    const host = new ControllerHost(controller, {
-      decisionHz: config.decisionHz[controller.name as ControllerKind] ?? 10,
-      mode: config.controlMode,
-      neutral: config.car.neutral,
-    });
-    host.enabled = false;
-    const chase = new ChaseCamera(camera, view.root, config.camera, canvas);
-    const s: Session = {
-      seed: newSeed,
-      track,
-      car,
-      view,
-      controller,
-      host,
-      chase,
-      race,
-      simTime: 0,
-      dispose() {
-        race.dispose();
-        chase.dispose();
-        controller.dispose?.();
-        view.dispose();
-        car.dispose();
-        track.dispose();
-      },
-    };
-    race.events.on('finished', (result) => recordResult(result));
-    applyReset(s, startPoseMetres(layout, S));
-    race.startCountdown();
-    return s;
+    // Everything built so far is freed if a later step throws (e.g. a model fails to load).
+    const cleanup = new DisposeStack();
+    try {
+      const layout = generateTrack(newSeed);
+      const race = cleanup.add(
+        new Race({
+          layout,
+          worldScale: S,
+          config: config.race,
+          controller: config.controller,
+        }),
+        () => race.dispose(),
+      );
+      race.beginGenerating();
+      const track = cleanup.add(
+        await buildTrack(layout, scene, world, {
+          worldScale: S,
+          margin: config.trackMargin,
+          outOfBoundsY: config.outOfBoundsY,
+        }),
+        () => track.dispose(),
+      );
+      const car = cleanup.add(new CarPhysics(world, config, track.surfaceAt), () => car.dispose());
+      const view = cleanup.add(await CarView.create(car, config), () => view.dispose());
+      scene.add(view.root);
+      const controller = cleanup.add(createController(config.controller, { config }), () =>
+        controller.dispose?.(),
+      );
+      const host = new ControllerHost(controller, {
+        decisionHz: config.decisionHz[controller.name as ControllerKind] ?? 10,
+        mode: config.controlMode,
+        neutral: config.car.neutral,
+      });
+      host.enabled = false;
+      const chase = cleanup.add(new ChaseCamera(camera, view.root, config.camera, canvas), () =>
+        chase.dispose(),
+      );
+      const dust = cleanup.add(new Dust(config.car), () => dust.dispose());
+      scene.add(dust.points);
+      const s: Session = {
+        seed: newSeed,
+        track,
+        car,
+        view,
+        controller,
+        host,
+        chase,
+        race,
+        dust,
+        simTime: 0,
+        dispose: cleanup.release(),
+      };
+      race.events.on('finished', (result) => recordResult(result));
+      applyReset(s, startPoseMetres(layout, S));
+      race.startCountdown();
+      return s;
+    } catch (e) {
+      cleanup.disposeAll();
+      throw e;
+    }
+  };
+
+  const modelNames = [
+    ...new Set([...TILE_CATALOG.map((t) => t.model), `raceCar${config.car.colour}`]),
+  ];
+  let modelsLoaded = false;
+  /** Loads every model the game needs once, with the full-screen loading bar. */
+  const ensureModels = async (): Promise<void> => {
+    if (modelsLoaded) return;
+    hud.setLoading(0, modelNames.length);
+    try {
+      await preloadModels(modelNames, (done, total) => hud.setLoading(done, total));
+    } catch (e) {
+      hud.setLoadingError(`${errorMessage(e)} — press N to retry`);
+      throw e;
+    }
+    modelsLoaded = true;
+    hud.hideLoading();
   };
 
   /** Disposes the current session and builds a new one for `newSeed`. */
@@ -137,44 +182,44 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     if (building || disposed) return;
     building = true;
     try {
+      hud.unbind();
       session?.dispose();
       session = null;
       seed = newSeed;
       const url = new URL(window.location.href);
       url.searchParams.set('seed', String(newSeed));
       window.history.replaceState(null, '', url);
+      await ensureModels();
+      if (disposed) return;
+      hud.showToast('Generating track…');
       const s = await buildSession(newSeed);
-      if (disposed) s.dispose();
-      else session = s;
+      if (disposed) {
+        s.dispose();
+        return;
+      }
+      session = s;
+      hud.bind({
+        race: s.race,
+        layout: s.track.layout,
+        worldScale: S,
+        seed: s.seed,
+        controller: s.controller.name,
+      });
+      hud.hideToast();
     } catch (e) {
       // A dispose() during the build frees the world under it; that failure is expected.
-      if (!disposed) throw e;
+      if (!disposed) {
+        console.error(e);
+        // Keep the game usable: no session, and N (or Enter) tries again.
+        if (modelsLoaded) {
+          hud.showToast(
+            `Could not build the track: ${errorMessage(e)} — press N to retry`,
+            'error',
+          );
+        }
+      }
     } finally {
       building = false;
-    }
-  };
-
-  const hud = document.createElement('div');
-  hud.style.cssText =
-    'position:absolute;top:12%;left:0;right:0;text-align:center;font:600 28px/1.3 system-ui,sans-serif;text-shadow:0 2px 6px rgba(0,0,0,.7);white-space:pre;';
-  (document.getElementById('ui') ?? document.body).appendChild(hud);
-
-  const hudText = (s: Session | null): string => {
-    if (!s) return building ? 'Generating track…' : '';
-    const r = s.race;
-    switch (r.state) {
-      case 'countdown':
-        return r.countdownValue === null ? '' : String(r.countdownValue);
-      case 'racing': {
-        const go = r.raceTime < 1 ? 'GO!\n' : '';
-        return `${go}${formatTime(r.time)}   lap ${r.lap}/${r.laps}   checkpoint ${r.checkpointsPassed}/${r.checkpointCount}`;
-      }
-      case 'paused':
-        return `Paused (${formatTime(r.time)}) — Esc: resume`;
-      case 'finished':
-        return `Finished ${formatTime(r.result?.totalTime ?? r.time)} — Enter: restart, N: new track`;
-      default:
-        return 'Generating track…';
     }
   };
 
@@ -184,13 +229,13 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     restart: () => void rebuild(seed),
     newTrack: () => void rebuild(Math.floor(Math.random() * 1e9)),
     cycleCamera: () => session?.chase.cycle(),
+    toggleHelp: () => hud.toggleHelp(),
   });
 
   let panel: HTMLDivElement | null = null;
   if (config.debug) {
     panel = document.createElement('div');
-    panel.style.cssText =
-      'position:fixed;top:8px;left:8px;padding:6px 8px;background:rgba(0,0,0,.65);color:#fff;font:12px/1.4 monospace;white-space:pre;pointer-events:none;';
+    panel.className = 'ar-debug';
     document.body.appendChild(panel);
   }
 
@@ -203,7 +248,20 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
   resize();
 
   let lastRender = performance.now();
-  let lastHud = '';
+  const snapshot: HudSnapshot = {
+    time: 0,
+    speed: 0,
+    surface: null,
+    accelerator: 0,
+    steering: 0,
+    lap: 1,
+    laps: 1,
+    checkpointsPassed: 0,
+    checkpointCount: 0,
+    x: 0,
+    z: 0,
+    heading: 0,
+  };
   const loop = new GameLoop({
     hz: config.physicsHz,
     maxSubSteps: config.maxSubSteps,
@@ -238,13 +296,34 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       if (s) {
         s.view.render(alpha);
         s.chase.update(frameDt);
+        const cs = s.car.getState();
+        s.dust.update(
+          frameDt,
+          s.race.state === 'racing',
+          {
+            position: cs.position,
+            heading: cs.heading,
+            speed: cs.speed,
+            wheelSurfaces: cs.wheelSurfaces,
+          },
+          renderer.domElement.height,
+        );
+        const r = s.race;
+        snapshot.time = r.time;
+        snapshot.speed = cs.speed;
+        snapshot.surface = cs.surface;
+        snapshot.accelerator = cs.input.accelerator;
+        snapshot.steering = cs.input.steering;
+        snapshot.lap = r.lap;
+        snapshot.laps = r.laps;
+        snapshot.checkpointsPassed = r.checkpointsPassed;
+        snapshot.checkpointCount = r.checkpointCount;
+        snapshot.x = cs.position.x;
+        snapshot.z = cs.position.z;
+        snapshot.heading = cs.heading;
+        hud.update(snapshot, now);
       }
       renderer.render(scene, camera);
-      const text = hudText(s);
-      if (text !== lastHud) {
-        hud.textContent = text;
-        lastHud = text;
-      }
       if (panel) {
         if (!s) {
           panel.textContent = building ? 'building…' : '';
@@ -263,6 +342,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
           `speed ${car.speed.toFixed(1)} m/s (${(car.speed * 3.6).toFixed(0)} km/h)   surface ${car.surface ?? 'void'}\n` +
           `input accel ${car.input.accelerator.toFixed(2)} steer ${car.input.steering.toFixed(2)}\n` +
           `host decisions ${hs.decisions} skipped ${hs.skipped} errors ${hs.errors} latency ${hs.latencyMean.toFixed(2)}/${hs.latencyP95.toFixed(2)} ms\n` +
+          `draw calls ${renderer.info.render.calls}   dust ${s.dust.pool.aliveCount}/${s.dust.pool.capacity}\n` +
           `colliders ${c.colliders} bodies ${c.bodies} objects ${c.sceneObjects} geometries ${c.geometries} textures ${c.textures}\n` +
           `[WASD/arrows] drive  [C] camera  [R] reset  [Esc] pause  [Enter] restart  [N] new track`;
       }
@@ -291,6 +371,11 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     get race() {
       return session?.race;
     },
+    get dust() {
+      return session?.dust;
+    },
+    hud,
+    renderer,
     reset: () => session?.race.requestReset('manual'),
     rebuild,
     counts,
@@ -311,7 +396,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       window.removeEventListener('resize', resize);
       session?.dispose();
       session = null;
-      hud.remove();
+      hud.dispose();
       panel?.remove();
       renderer.dispose();
       world.free();
