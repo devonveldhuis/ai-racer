@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+Models
+package-lock.json
+AGENTS.md
+PLAN.md
+Tasks
