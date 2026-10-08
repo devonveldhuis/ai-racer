@@ -5,6 +5,9 @@ export interface GameLoopOptions {
   maxSubSteps?: number;
   /** Fixed-step simulation update; `dt` is in seconds. */
   update: (dt: number) => void;
+  /** While this returns false no update steps run (lockstep control), time is not banked and
+   * rendering continues. */
+  shouldUpdate?: () => boolean;
   /** Render callback; `alpha` in [0, 1) is the fraction into the next step. */
   render: (alpha: number) => void;
 }
@@ -18,6 +21,7 @@ export class GameLoop {
   readonly dt: number;
   private readonly maxSubSteps: number;
   private readonly updateFn: (dt: number) => void;
+  private readonly shouldUpdate: (() => boolean) | undefined;
   private readonly renderFn: (alpha: number) => void;
   private accumulator = 0;
   private last: number | null = null;
@@ -27,19 +31,24 @@ export class GameLoop {
     this.dt = 1 / (opts.hz ?? 60);
     this.maxSubSteps = opts.maxSubSteps ?? 5;
     this.updateFn = opts.update;
+    this.shouldUpdate = opts.shouldUpdate;
     this.renderFn = opts.render;
   }
 
   /** Advances by `elapsed` seconds of wall time; returns number of update steps run. */
   advance(elapsed: number): number {
-    this.accumulator += Math.max(0, elapsed);
+    const blockedAtStart = this.shouldUpdate !== undefined && !this.shouldUpdate();
+    if (!blockedAtStart) this.accumulator += Math.max(0, elapsed);
     let steps = 0;
     while (this.accumulator >= this.dt && steps < this.maxSubSteps) {
+      if (this.shouldUpdate && !this.shouldUpdate()) {
+        break;
+      }
       this.updateFn(this.dt);
       this.accumulator -= this.dt;
       steps++;
     }
-    // Spiral-of-death guard: drop time we could not simulate.
+    // Spiral-of-death guard (and no backlog while blocked): drop whole steps we could not run.
     if (this.accumulator >= this.dt) this.accumulator = this.accumulator % this.dt;
     this.renderFn(this.accumulator / this.dt);
     return steps;

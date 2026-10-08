@@ -2,6 +2,9 @@ import type { SurfaceType } from '../assets/surfaces';
 
 export type ControllerKind = 'keyboard' | 'bot' | 'remote';
 
+/** How the sim treats a controller that is still thinking: keep running, or wait for it. */
+export type ControlMode = 'realtime' | 'lockstep';
+
 export type CarColour = 'Red' | 'Green' | 'Orange' | 'White';
 
 /**
@@ -68,11 +71,40 @@ export interface SurfaceParams {
   drag: number;
 }
 
+export interface KeyboardConfig {
+  /** Accelerator change per second towards throttle, brake and back to neutral. */
+  accelRate: number;
+  brakeRate: number;
+  accelReturnRate: number;
+  /** Steering change per second towards a held key, and back to centre when released. */
+  steerRate: number;
+  steerReturnRate: number;
+}
+
+export interface ChaseCameraConfig {
+  /** Metres behind the car, metres above it and metres ahead of it that the camera looks at. */
+  distance: number;
+  height: number;
+  lookAhead: number;
+  /** Exponential smoothing rate (1/s): the fraction closed per second is 1 - exp(-stiffness). */
+  stiffness: number;
+  /** Height (m) of the top-down camera. */
+  topDownHeight: number;
+  fov: number;
+}
+
 export interface GameConfig {
   /** Track / RNG seed. */
   seed: number;
   /** Which driver controls the car. */
   controller: ControllerKind;
+  /** `realtime`: the sim runs while a decision is pending; `lockstep`: it waits for it. */
+  controlMode: ControlMode;
+  /** Decisions per simulated second, per controller kind. */
+  decisionHz: Record<ControllerKind, number>;
+  /** Keyboard ramp rates (units per second) and chase camera tuning. */
+  keyboard: KeyboardConfig;
+  camera: ChaseCameraConfig;
   /** Show debug overlays. */
   debug: boolean;
   /** Fixed physics rate in Hz. */
@@ -94,6 +126,23 @@ export const CONTROLLER_KINDS: readonly ControllerKind[] = ['keyboard', 'bot', '
 export const DEFAULT_CONFIG: Readonly<GameConfig> = {
   seed: 1,
   controller: 'keyboard',
+  controlMode: 'realtime',
+  decisionHz: { keyboard: 60, bot: 10, remote: 10 },
+  keyboard: {
+    accelRate: 2.4,
+    brakeRate: 4,
+    accelReturnRate: 4,
+    steerRate: 3.3,
+    steerReturnRate: 6.7,
+  },
+  camera: {
+    distance: 7,
+    height: 3.2,
+    lookAhead: 3,
+    stiffness: 6,
+    topDownHeight: 45,
+    fov: 60,
+  },
   debug: false,
   physicsHz: 60,
   maxSubSteps: 5,
@@ -151,7 +200,7 @@ function parseBool(v: string): boolean | undefined {
 }
 
 /**
- * Reads `seed`, `controller` and `debug` query params over the defaults.
+ * Reads `seed`, `controller`, `mode` (control mode) and `debug` query params over the defaults.
  * Invalid values are ignored (the default is kept).
  */
 export function parseUrlOverrides(
@@ -171,6 +220,12 @@ export function parseUrlOverrides(
   if (controller !== null) {
     const c = controller.trim().toLowerCase() as ControllerKind;
     if (CONTROLLER_KINDS.includes(c)) config.controller = c;
+  }
+
+  const mode = params.get('mode');
+  if (mode !== null) {
+    const m = mode.trim().toLowerCase();
+    if (m === 'realtime' || m === 'lockstep') config.controlMode = m;
   }
 
   const debug = params.get('debug');
