@@ -1,6 +1,11 @@
 /**
  * Procedural closed-loop track generator. Pure data and math, fully deterministic.
  *
+ * Main straight: the start piece is flanked by a pre-placed run of straights (15-20 cells
+ * in total by default); the search only has to connect the end of that run to its start
+ * with corners. Elsewhere, straights come in runs: after a corner a straight starts a run
+ * of a drawn length (`straightRunCells`) that is finished before the next corner.
+ *
  * Algorithm: randomised depth-first search ("random walk with backtracking") on the cell
  * grid. Piece 0 is the start/finish straight at the origin with a random orientation; the
  * search then chains pieces with `placementToJoin` (each piece is a catalog tile or its
@@ -18,6 +23,7 @@
  */
 import {
   connectorsMatch,
+  DIR_VECTORS,
   getTile,
   neighbourCell,
   oppositeDir,
@@ -52,12 +58,17 @@ import {
 const CENTRELINE_STEP = 0.2;
 /** Along-track position of the start pose on the start piece (the rear painted grid slot). */
 const START_POSE_T = 0.375;
-/** Search nodes (candidate expansions) per attempt. */
-const NODE_BUDGET = 60;
+/** Search nodes (candidate expansions) per attempt, per allowed piece of `maxPieces`. */
+const NODE_BUDGET_PER_PIECE = 3;
 /** Strength of the steering towards the closing cell. */
 const STEER = 1.5;
 /** Upper bound on how far (manhattan, cells) a single piece can move the road head. */
 const MAX_ADVANCE = 5;
+/** Selection weight of "start a straight run" relative to the plain tile weights. */
+const RUN_WEIGHT = 1;
+/** Pieces of the main straight are put in this index range in the occupancy map (the
+ * approach before the start piece), so they can be told apart from the searched pieces. */
+const TAIL_INDEX = 100000;
 
 export interface PieceSpec {
   tileId: string;
@@ -75,6 +86,9 @@ export function resolveTrackOptions(options: TrackOptions = {}): ResolvedTrackOp
     checkpointEvery: options.checkpointEvery ?? d.checkpointEvery,
     clearance: options.clearance ?? d.clearance,
     maxAttempts: options.maxAttempts ?? d.maxAttempts,
+    mainStraightCells: [...(options.mainStraightCells ?? d.mainStraightCells)] as [number, number],
+    minCorners: options.minCorners ?? d.minCorners,
+    straightRunCells: [...(options.straightRunCells ?? d.straightRunCells)] as [number, number],
   };
   if (!Number.isInteger(r.minPieces) || r.minPieces < 2) throw new Error('minPieces must be >= 2');
   if (!Number.isInteger(r.maxPieces) || r.maxPieces < r.minPieces)
@@ -85,6 +99,14 @@ export function resolveTrackOptions(options: TrackOptions = {}): ResolvedTrackOp
     throw new Error('clearance must be an integer >= 0');
   if (!Number.isInteger(r.maxAttempts) || r.maxAttempts < 1)
     throw new Error('maxAttempts must be an integer >= 1');
+  const [mLo, mHi] = r.mainStraightCells;
+  if (!Number.isInteger(mLo) || !Number.isInteger(mHi) || mLo < 3 || mHi < mLo)
+    throw new Error('mainStraightCells must be integers [min, max] with 3 <= min <= max');
+  if (!Number.isInteger(r.minCorners) || r.minCorners < 0)
+    throw new Error('minCorners must be an integer >= 0');
+  const [rLo, rHi] = r.straightRunCells;
+  if (!Number.isInteger(rLo) || !Number.isInteger(rHi) || rLo < 1 || rHi < rLo)
+    throw new Error('straightRunCells must be integers [min, max] with 1 <= min <= max');
   return r;
 }
 
@@ -125,6 +147,32 @@ interface SearchResult {
   startRotation: Rotation;
 }
 
+/** A chain of straight pieces totalling `cells` cells, or null if the tiles cannot make it. */
+function fillStraights(
+  rng: Rng,
+  straights: readonly Candidate[],
+  cells: number,
+): Candidate[] | null {
+  const out: Candidate[] = [];
+  let left = cells;
+  while (left > 0) {
+    const fit = straights.filter((c) => c.def.length <= left);
+    if (fit.length === 0) return null;
+    let total = 0;
+    for (const c of fit) total += c.weight;
+    let r = rng.next() * total;
+    let k = 0;
+    while (k < fit.length - 1 && r >= (fit[k] as Candidate).weight) {
+      r -= (fit[k] as Candidate).weight;
+      k++;
+    }
+    const c = fit[k] as Candidate;
+    out.push(c);
+    left -= c.def.length;
+  }
+  return out;
+}
+
 /** One search attempt; returns the piece specs (start piece excluded) or null. */
 function searchOnce(rng: Rng, opts: ResolvedTrackOptions, cands: Candidate[]): SearchResult | null {
   const start = startTile();
@@ -132,16 +180,72 @@ function searchOnce(rng: Rng, opts: ResolvedTrackOptions, cands: Candidate[]): S
   const startPlacement: Placement = { cell: { x: 0, z: 0 }, rotation: startRotation };
   const startConn = placedConnectors(start, startPlacement);
   if (!startConn) return null;
-  const target = neighbourCell(startConn.entry.cell, startConn.entry.edge);
+
+  const { minPieces, maxPieces, clearance, minCorners } = opts;
+  const straights = cands.filter((c) => c.def.kind === 'straight');
+  const maxLen = Math.max(...straights.map((c) => c.def.length));
 
   const occupancy = new Map<string, number>();
   for (const c of placedCells(start, startPlacement)) occupancy.set(cellKey(c), 0);
+
+  // Main straight: the start piece plus `post` cells of straights after it and `pre` cells
+  // before it (`pre` >= 1 so the piece before the start is a straight). They are placed up
+  // front; the search only has to find a path from the end of the post run to the start of
+  // the pre run, beginning and ending with a corner.
+  const main = rng.int(opts.mainStraightCells[0], opts.mainStraightCells[1]);
+  const rest = main - start.length;
+  if (rest < 1) return null;
+  let post = rng.int(Math.floor(rest * 0.3), Math.ceil(rest * 0.7));
+  post = Math.min(post, rest - 1);
+  const pre = rest - post;
+  const postPieces = fillStraights(rng, straights, post);
+  const prePieces = fillStraights(rng, straights, pre);
+  if (!postPieces || !prePieces) return null;
+
+  const postSpecs: PieceSpec[] = [];
+  let exit = startConn.exit;
+  postPieces.forEach((c, i) => {
+    const placement = placementToJoin(exit, c.def) as Placement;
+    exit = (placedConnectors(c.def, placement) as { exit: Connector }).exit;
+    for (const cell of placedCells(c.def, placement)) occupancy.set(cellKey(cell), i + 1);
+    postSpecs.push(c.spec);
+  });
+  const postExit = exit;
+  const count0 = 1 + postPieces.length;
+
+  // The approach is built forwards from a virtual exit `pre` cells behind the start piece.
+  const behind = DIR_VECTORS[startConn.entry.edge];
+  exit = {
+    cell: {
+      x: startConn.entry.cell.x + behind.x * (pre + 1),
+      z: startConn.entry.cell.z + behind.z * (pre + 1),
+    },
+    edge: oppositeDir(startConn.entry.edge),
+  };
+  const preSpecs: PieceSpec[] = [];
+  let preEntry: Connector | null = null;
+  for (let i = 0; i < prePieces.length; i++) {
+    const c = prePieces[i] as Candidate;
+    const placement = placementToJoin(exit, c.def);
+    const conns = placement && placedConnectors(c.def, placement);
+    if (!placement || !conns) return null;
+    preEntry ??= conns.entry;
+    exit = conns.exit;
+    for (const cell of placedCells(c.def, placement)) occupancy.set(cellKey(cell), TAIL_INDEX + i);
+    preSpecs.push(c.spec);
+  }
+  if (!preEntry || !connectorsMatch(exit, startConn.entry)) return null;
+  const closeEntry = preEntry;
+  const target = neighbourCell(closeEntry.cell, closeEntry.edge);
+  const preCount = preSpecs.length;
+
   const specs: PieceSpec[] = [];
   let nodes = 0;
-  const { minPieces, maxPieces, clearance } = opts;
-  // Piece count the walk aims to close at; steering towards the start gets stronger as the
-  // count approaches it.
+  const budget = NODE_BUDGET_PER_PIECE * maxPieces;
+  // Piece count the walk aims to close at; steering towards the closing cell gets stronger
+  // as the count approaches it.
   const aim = rng.int(minPieces, maxPieces);
+  const [runLo, runHi] = opts.straightRunCells;
 
   const isFree = (cells: Vec2[], prev: number, closes: boolean): boolean => {
     for (const c of cells) if (occupancy.has(cellKey(c))) return false;
@@ -152,7 +256,7 @@ function searchOnce(rng: Rng, opts: ResolvedTrackOptions, cands: Candidate[]): S
         for (let dz = -rest; dz <= rest; dz++) {
           const j = occupancy.get(cellKey({ x: c.x + dx, z: c.z + dz }));
           if (j === undefined || j === prev) continue;
-          if (closes && j === 0) continue;
+          if (closes && j === TAIL_INDEX) continue;
           return false;
         }
       }
@@ -167,33 +271,90 @@ function searchOnce(rng: Rng, opts: ResolvedTrackOptions, cands: Candidate[]): S
     exit: Connector;
     closes: boolean;
     weight: number;
+    /** Cells of the straight run still to be laid after this piece. */
+    runAfter: number;
   }
 
-  const extend = (exit: Connector, count: number): boolean => {
-    if (++nodes > NODE_BUDGET) return false;
+  /**
+   * `runLeft` > 0: a straight run was started and must be completed with straights.
+   * `runLeft` = 0 after a straight: only a corner may follow (runs end in corners).
+   * After a corner: another corner, or a straight that starts a run of drawn length.
+   */
+  const extend = (
+    exit: Connector,
+    count: number,
+    runLeft: number,
+    lastStraight: boolean,
+    corners: number,
+  ): boolean => {
+    if (++nodes > budget) return false;
     const head = neighbourCell(exit.cell, exit.edge);
+    const dir = DIR_VECTORS[exit.edge];
     const dist0 = manhattan(head, target);
-    const pressure = Math.min(1, count / aim) ** 2;
+    const pressure = Math.min(1, (count + preCount) / aim) ** 2;
     const options: Option[] = [];
     for (const cand of cands) {
+      const isCorner = cand.def.kind === 'corner';
+      if (runLeft > 0 ? isCorner || cand.def.length > runLeft : lastStraight && !isCorner) continue;
       const placement = placementToJoin(exit, cand.def);
       if (!placement) continue;
       const conns = placedConnectors(cand.def, placement);
       if (!conns) continue;
-      const closes = connectorsMatch(conns.exit, startConn.entry);
-      const n = count + 1;
+      const own = placedCells(cand.def, placement);
+      const n = count + 1 + preCount;
+      const closes = isCorner && connectorsMatch(conns.exit, closeEntry);
       if (closes) {
-        if (cand.def.kind !== 'straight' || n < minPieces || n > maxPieces) continue;
-      } else if (n >= maxPieces) continue;
-      const cells = placedCells(cand.def, placement);
-      if (!isFree(cells, count - 1, closes)) continue;
-      let weight = cand.weight;
-      if (!closes) {
-        const next = manhattan(neighbourCell(conns.exit.cell, conns.exit.edge), target);
-        if (next > MAX_ADVANCE * (maxPieces - n)) continue;
-        weight *= Math.exp(-pressure * STEER * (next - dist0));
+        if (n < minPieces || n > maxPieces || corners + 1 < minCorners) continue;
+        if (!isFree(own, count - 1, true)) continue;
+        options.push({
+          cand,
+          placement,
+          cells: own,
+          exit: conns.exit,
+          closes,
+          weight: cand.weight,
+          runAfter: 0,
+        });
+        continue;
       }
-      options.push({ cand, placement, cells, exit: conns.exit, closes, weight });
+      // Run lengths this piece can start (new run), or just its continuation.
+      const starts =
+        !isCorner && runLeft === 0
+          ? Array.from({ length: runHi - runLo + 1 }, (_, i) => runLo + i).filter(
+              (r) => r >= cand.def.length,
+            )
+          : [0];
+      for (const r of starts) {
+        const runAfter = isCorner ? 0 : r > 0 ? r - cand.def.length : runLeft - cand.def.length;
+        if (n + Math.ceil(runAfter / maxLen) >= maxPieces) continue;
+        // For a new run, the whole line must be free so it cannot dead-end halfway.
+        const line: Vec2[] =
+          r > 0
+            ? Array.from({ length: r }, (_, k) => ({
+                x: head.x + dir.x * k,
+                z: head.z + dir.z * k,
+              }))
+            : own;
+        if (!isFree(line, count - 1, false)) continue;
+        let weight = cand.weight;
+        if (r > 0) weight *= RUN_WEIGHT / starts.length;
+        const out = neighbourCell(conns.exit.cell, conns.exit.edge);
+        const next = manhattan(
+          { x: out.x + dir.x * runAfter, z: out.z + dir.z * runAfter },
+          target,
+        );
+        if (next > MAX_ADVANCE * (maxPieces - n - Math.ceil(runAfter / maxLen))) continue;
+        weight *= Math.exp(-pressure * STEER * (next - dist0));
+        options.push({
+          cand,
+          placement,
+          cells: own,
+          exit: conns.exit,
+          closes: false,
+          weight,
+          runAfter,
+        });
+      }
     }
     while (options.length > 0) {
       let total = 0;
@@ -208,15 +369,20 @@ function searchOnce(rng: Rng, opts: ResolvedTrackOptions, cands: Candidate[]): S
       specs.push(o.cand.spec);
       if (o.closes) return true;
       for (const c of o.cells) occupancy.set(cellKey(c), count);
-      if (extend(o.exit, count + 1)) return true;
+      const isCorner = o.cand.def.kind === 'corner';
+      if (extend(o.exit, count + 1, o.runAfter, !isCorner, corners + (isCorner ? 1 : 0)))
+        return true;
       for (const c of o.cells) occupancy.delete(cellKey(c));
       specs.pop();
-      if (nodes > NODE_BUDGET) return false;
+      if (nodes > budget) return false;
     }
     return false;
   };
 
-  return extend(startConn.exit, 1) ? { specs, startRotation } : null;
+  // After the main straight's post run the next piece must be a corner.
+  return extend(postExit, count0, 0, true, 0)
+    ? { specs: [...postSpecs, ...specs, ...preSpecs], startRotation }
+    : null;
 }
 
 /**

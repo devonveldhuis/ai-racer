@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG } from '../core/config';
 import { buildTrack, type LoadModelFn } from '../track/builder';
 import { generateTrack } from '../track/generator';
 import type { TrackLayout } from '../track/layout';
+import { mainStraight } from '../track/straights';
 import { CarPhysics } from './CarPhysics';
 import { maxSteerAngle } from './control';
 
@@ -34,13 +35,20 @@ interface LapResult {
   roadFraction: number;
   outOfBounds: boolean;
   topSpeed: number;
+  /** Peak speed while on the main straight during the last lap. */
+  mainStraightPeak: number;
 }
 
 /**
  * Test-only pure-pursuit driver on the centreline: steers at a point a speed-dependent
  * distance ahead, and slows down for the sharpest curvature in the next stretch of road.
  */
-async function driveLap(seed: number, limitSeconds: number): Promise<LapResult> {
+async function driveLap(
+  seed: number,
+  limitSeconds: number,
+  laps = 1,
+  fullThrottleOnMain = false,
+): Promise<LapResult> {
   const layout = generateTrack(seed);
   const scene = new THREE.Scene();
   const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
@@ -82,6 +90,11 @@ async function driveLap(seed: number, limitSeconds: number): Promise<LapResult> 
   let topSpeed = 0;
   let outOfBounds = false;
   let steps = 0;
+  const main = mainStraight(layout);
+  const onMain = new Set<number>();
+  for (let k = 0; k < main.pieceCount; k++)
+    onMain.add((main.startPiece + k) % layout.pieces.length);
+  let mainStraightPeak = 0;
 
   for (; steps < maxSteps; steps++) {
     const s = car.getState();
@@ -99,7 +112,7 @@ async function driveLap(seed: number, limitSeconds: number): Promise<LapResult> 
       }
     }
     progress += bestJ;
-    if (progress >= n) break;
+    if (progress >= n * laps) break;
     const here = (startIdx + progress) % n;
 
     // Look-ahead target and speed from the curvature ahead.
@@ -115,7 +128,11 @@ async function driveLap(seed: number, limitSeconds: number): Promise<LapResult> 
     for (let j = 0; j <= aheadPts; j++) kmax = Math.max(kmax, curv[(here + j) % n] as number);
     const vTarget = Math.min(30, Math.max(3.5, Math.sqrt(LATERAL_ACCEL / Math.max(kmax, 1e-3))));
     const err = vTarget - s.speed;
-    const accelerator = err > 0 ? 0.5 + Math.min(0.5, err * 0.5) : Math.max(0, 0.5 + err * 0.25);
+    let accelerator = err > 0 ? 0.5 + Math.min(0.5, err * 0.5) : Math.max(0, 0.5 + err * 0.25);
+    // Optionally floor it along the main straight in the last lap (the driver's braking
+    // look-ahead would otherwise lift early).
+    const lastLap = progress >= n * (laps - 1);
+    if (fullThrottleOnMain && lastLap && onMain.has(cl.pieceIndex[here] as number)) accelerator = 1;
 
     car.setInput({ accelerator, steering });
     car.update(DT);
@@ -125,18 +142,21 @@ async function driveLap(seed: number, limitSeconds: number): Promise<LapResult> 
     if (after.surface === 'road' || after.surface === 'kerb') roadSteps++;
     minUp = Math.min(minUp, car.upY());
     topSpeed = Math.max(topSpeed, after.speed);
+    if (lastLap && onMain.has(cl.pieceIndex[here] as number))
+      mainStraightPeak = Math.max(mainStraightPeak, after.speed);
     if (track.isOutOfBounds(after.position)) {
       outOfBounds = true;
       break;
     }
   }
   const result: LapResult = {
-    finished: progress >= n,
+    finished: progress >= n * laps,
     time: steps * DT,
     minUp,
     roadFraction: roadSteps / Math.max(1, steps),
     outOfBounds,
     topSpeed,
+    mainStraightPeak,
   };
   car.dispose();
   track.dispose();
@@ -164,6 +184,27 @@ describe('drivability (pure-pursuit driver on generated tracks)', () => {
       expect(r.finished).toBe(true);
       expect(r.minUp).toBeGreaterThan(0.7);
       expect(r.roadFraction).toBeGreaterThanOrEqual(0.8);
+    });
+  }
+});
+
+describe('speed on the main straight', () => {
+  // Second lap, so the car arrives on the main straight from the last corner, not from rest.
+  // The pure-pursuit driver lifts early for the corner after the straight (peaks of only
+  // 18-19 m/s were measured), so the straight is driven at full throttle from its entry.
+  for (const seed of [1, 2, 3]) {
+    it(`reaches 20 m/s on the main straight of seed ${seed}`, async () => {
+      const layout = generateTrack(seed);
+      const limit = (layout.centreline.totalLength * S * 2) / 5.5 + 2;
+      const r = await driveLap(seed, limit, 2, true);
+      if (process.env.LAP_REPORT)
+        console.info(
+          `seed ${seed}: main straight ${mainStraight(layout).cells} cells, peak ${r.mainStraightPeak.toFixed(1)} m/s`,
+        );
+      expect(r.outOfBounds).toBe(false);
+      expect(r.finished).toBe(true);
+      expect(r.minUp).toBeGreaterThan(0.7);
+      expect(r.mainStraightPeak).toBeGreaterThanOrEqual(20);
     });
   }
 });

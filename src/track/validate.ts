@@ -1,5 +1,6 @@
 import { connectorsMatch, placedConnectors } from '../assets/tiles';
 import { cellKey, pieceDef, type TrackLayout, type TrackPiece } from './layout';
+import { straightRuns } from './straights';
 
 /**
  * Independent check of every layout invariant. Returns a list of problems (empty = valid).
@@ -12,6 +13,15 @@ export function validateLayout(layout: TrackLayout): string[] {
   const n = pieces.length;
   if (n < options.minPieces || n > options.maxPieces)
     errors.push(`piece count ${n} outside [${options.minPieces}, ${options.maxPieces}]`);
+
+  const corners = pieces.filter((p) => p.kind === 'corner').length;
+  if (corners < options.minCorners)
+    errors.push(`only ${corners} corners, expected at least ${options.minCorners}`);
+  const [mainLo, mainHi] = options.mainStraightCells;
+  const main = straightRuns(layout).find((r) => r.containsStart);
+  if (!main) errors.push('start piece is not on a straight run');
+  else if (main.cells < mainLo || main.cells > mainHi)
+    errors.push(`main straight is ${main.cells} cells, expected [${mainLo}, ${mainHi}]`);
 
   const owner = new Map<string, number>();
   for (const p of pieces)

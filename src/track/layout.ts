@@ -25,9 +25,9 @@ import {
 export type TurnDir = 'left' | 'right';
 
 export interface TrackOptions {
-  /** Minimum number of pieces in the loop, start piece included. Default 16. */
+  /** Minimum number of pieces in the loop, start piece included. Default 30. */
   minPieces?: number;
-  /** Maximum number of pieces in the loop, start piece included. Default 40. */
+  /** Maximum number of pieces in the loop, start piece included. Default 60. */
   maxPieces?: number;
   /** Catalog tile ids the loop may use (straights and corners). Default: all of them. The
    * start/finish tile is always used exactly once and need not be listed. */
@@ -45,6 +45,16 @@ export interface TrackOptions {
   clearance?: number;
   /** Search attempts before giving up with an error. Default 200. */
   maxAttempts?: number;
+  /** Length range, in cells, of the main straight: the straight run containing the start
+   * piece (counted along the centreline from the exit of the corner before it to the entry of
+   * the corner after it). Drawn per track. Both ends are integers >= 3 (the start piece is 2
+   * cells plus at least one cell of approach). Default [15, 20]. */
+  mainStraightCells?: readonly [number, number];
+  /** Minimum number of corner pieces in the loop. Default 6. */
+  minCorners?: number;
+  /** Length range, in cells, of the other straight runs the generator starts after a corner
+   * (a run is a chain of straight pieces between two corners). Default [2, 9]. */
+  straightRunCells?: readonly [number, number];
 }
 
 export interface ResolvedTrackOptions {
@@ -56,11 +66,14 @@ export interface ResolvedTrackOptions {
   checkpointEvery: number;
   clearance: number;
   maxAttempts: number;
+  mainStraightCells: [number, number];
+  minCorners: number;
+  straightRunCells: [number, number];
 }
 
 export const DEFAULT_TRACK_OPTIONS: Readonly<ResolvedTrackOptions> = {
-  minPieces: 16,
-  maxPieces: 40,
+  minPieces: 30,
+  maxPieces: 60,
   allowedTiles: [
     'roadStraight',
     'roadStraightLong',
@@ -79,6 +92,9 @@ export const DEFAULT_TRACK_OPTIONS: Readonly<ResolvedTrackOptions> = {
   checkpointEvery: 4,
   clearance: 1,
   maxAttempts: 200,
+  mainStraightCells: [15, 20],
+  minCorners: 6,
+  straightRunCells: [2, 9],
 };
 
 export interface TrackPiece {

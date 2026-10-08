@@ -3,6 +3,7 @@ import { connectorsMatch, placedConnectors, type Vec2 } from '../assets/tiles';
 import { trackToAscii } from './ascii';
 import { generateTrack, layoutFromPieces, type PieceSpec } from './generator';
 import { cellKey, DEFAULT_TRACK_OPTIONS, dirHeading, headingVector, pieceDef } from './layout';
+import { mainStraight, straightRunLengths, straightRuns } from './straights';
 import { validateLayout } from './validate';
 
 const SEEDS = Array.from({ length: 500 }, (_, i) => i);
@@ -62,8 +63,8 @@ describe('generateTrack', () => {
     for (const l of layouts) {
       expect(validateLayout(l), `seed ${l.seed}`).toEqual([]);
       const n = l.pieces.length;
-      expect(n).toBeGreaterThanOrEqual(16);
-      expect(n).toBeLessThanOrEqual(40);
+      expect(n).toBeGreaterThanOrEqual(30);
+      expect(n).toBeLessThanOrEqual(60);
       expect(l.pieces.filter((p) => p.kind === 'start_finish')).toHaveLength(1);
       expect(l.pieces[0]?.tileId).toBe('roadStartPositions');
       expect(l.pieces[n - 1]?.kind).toBe('straight');
@@ -152,6 +153,8 @@ describe('generateTrack', () => {
       allowedTiles: ['roadStraight', 'roadCornerLarge'],
       checkpointEvery: 3,
       clearance: 1,
+      mainStraightCells: [3, 4],
+      minCorners: 4,
     });
     expect(validateLayout(l)).toEqual([]);
     expect(l.pieces.length).toBeGreaterThanOrEqual(10);
@@ -192,6 +195,87 @@ describe('generateTrack', () => {
     expect(() => generateTrack(1, { allowedTiles: ['nope'] })).toThrow(/Unknown tile/);
     expect(() => generateTrack(1, { minPieces: 20, maxPieces: 10 })).toThrow(/maxPieces/);
     expect(() => generateTrack(1, { checkpointEvery: 0 })).toThrow(/checkpointEvery/);
+  });
+});
+
+describe('straight runs', () => {
+  it('measures runs of a hand-made loop, wrapping around the end of the piece list', () => {
+    const l = layoutFromPieces(0, {}, CLOCKWISE, 0);
+    // Start (2 cells) + last piece of the list (1) form the run through the start line.
+    const runs = straightRuns(l);
+    expect(runs.map((r) => r.cells)).toEqual([1, 3, 1, 3]);
+    expect(runs.find((r) => r.containsStart)).toMatchObject({
+      startPiece: 10,
+      pieceCount: 2,
+      cells: 3,
+    });
+    expect(runs.filter((r) => r.containsStart)).toHaveLength(1);
+    expect(straightRunLengths(l)).toEqual([3, 3, 1, 1]);
+    expect(mainStraight(l).cells).toBe(3);
+  });
+
+  it('counts a long straight tile as its length', () => {
+    const long: PieceSpec = { tileId: 'roadStraightLong', reversed: false };
+    const l = layoutFromPieces(
+      0,
+      {},
+      [smallRight(), long, smallRight(), long, long, smallRight(), long, smallRight(), long],
+      0,
+    );
+    expect(straightRunLengths(l)).toEqual([4, 4, 2, 2]);
+  });
+
+  it('gives every default track a main straight of 15-20 cells through the start piece', () => {
+    for (const l of layouts) {
+      const main = mainStraight(l);
+      expect(main.cells, `seed ${l.seed}`).toBeGreaterThanOrEqual(15);
+      expect(main.cells, `seed ${l.seed}`).toBeLessThanOrEqual(20);
+      expect(main.containsStart).toBe(true);
+      expect(straightRuns(l).filter((r) => r.containsStart)).toHaveLength(1);
+    }
+  });
+
+  it('draws the main straight length from the option range', () => {
+    const lengths = new Set<number>();
+    for (let s = 0; s < 40; s++)
+      lengths.add(mainStraight(generateTrack(s, { mainStraightCells: [6, 8] })).cells);
+    expect([...lengths].sort()).toEqual([6, 7, 8]);
+    expect(mainStraight(generateTrack(1, { mainStraightCells: [12, 12] })).cells).toBe(12);
+  });
+
+  it('has medium straights: median second-longest run >= 8 cells', () => {
+    const second = layouts.map((l) => straightRunLengths(l)[1] as number).sort((a, b) => a - b);
+    expect(second[second.length >> 1]).toBeGreaterThanOrEqual(8);
+  });
+
+  it('keeps the corner count near the old generator (about 14) and above minCorners', () => {
+    const counts = layouts.map((l) => l.pieces.filter((p) => p.kind === 'corner').length);
+    const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+    expect(mean).toBeGreaterThan(14.2 * 0.8);
+    expect(mean).toBeLessThan(14.2 * 1.2);
+    for (const c of counts) expect(c).toBeGreaterThanOrEqual(6);
+  });
+
+  it('honours a custom minCorners', () => {
+    for (let s = 0; s < 20; s++) {
+      const l = generateTrack(s, { minCorners: 12 });
+      expect(l.pieces.filter((p) => p.kind === 'corner').length).toBeGreaterThanOrEqual(12);
+      expect(validateLayout(l)).toEqual([]);
+    }
+  });
+
+  it('validateLayout flags a missing main straight and too few corners', () => {
+    const l = layoutFromPieces(0, {}, CLOCKWISE, 0);
+    const errors = validateLayout(l);
+    expect(errors.some((e) => e.includes('main straight'))).toBe(true);
+    expect(errors.some((e) => e.includes('corners'))).toBe(true);
+  });
+
+  it('rejects bad main-straight and run options', () => {
+    expect(() => generateTrack(1, { mainStraightCells: [2, 5] })).toThrow(/mainStraightCells/);
+    expect(() => generateTrack(1, { mainStraightCells: [9, 5] })).toThrow(/mainStraightCells/);
+    expect(() => generateTrack(1, { minCorners: -1 })).toThrow(/minCorners/);
+    expect(() => generateTrack(1, { straightRunCells: [0, 3] })).toThrow(/straightRunCells/);
   });
 });
 
@@ -373,7 +457,9 @@ describe('hand-checked layouts', () => {
     expect(l.checkpoints[2]!.position).toEqual({ x: 0.5, z: 2 });
     expect(l.checkpoints[2]!.normal).toEqual({ x: 0, z: -1 });
     expect(trackToAscii(l)).toBe('R>R\n^.v\nS.v\n^.v\nR<R');
-    expect(validateLayout(l).filter((e) => !e.includes('piece count'))).toEqual([]);
+    expect(validateLayout(l).filter((e) => !/piece count|corners|main straight/.test(e))).toEqual(
+      [],
+    );
   });
 
   it('anti-clockwise loop: left corners relative to the driving direction', () => {
@@ -399,7 +485,9 @@ describe('hand-checked layouts', () => {
     expect(l.startPose.heading).toBeCloseTo(Math.PI / 2, 9);
     const turns = new Set(l.pieces.filter((p) => p.kind === 'corner').map((p) => p.turn));
     expect([...turns]).toEqual(['right']);
-    expect(validateLayout(l).filter((e) => !e.includes('piece count'))).toEqual([]);
+    expect(validateLayout(l).filter((e) => !/piece count|corners|main straight/.test(e))).toEqual(
+      [],
+    );
   });
 
   it('multi-cell corners report their turn on every cell of the footprint', () => {
