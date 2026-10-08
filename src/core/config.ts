@@ -1,4 +1,72 @@
+import type { SurfaceType } from '../assets/surfaces';
+
 export type ControllerKind = 'keyboard' | 'bot' | 'remote';
+
+export type CarColour = 'Red' | 'Green' | 'Orange' | 'White';
+
+/**
+ * Car tuning. Lengths in metres, forces in N, angles in radians. The car frame is x right,
+ * y up, z forward (the model faces +z); the body origin sits at the axle height, halfway
+ * between the axles. Dimensions are the Racing Kit car (0.55 x 1.35 model units) x `modelScale` 2.
+ */
+export interface CarConfig {
+  /** `raceCar<Colour>.glb`. */
+  colour: CarColour;
+  /** Metres per GLB unit for the car model (the track uses `worldScale`). */
+  modelScale: number;
+  mass: number;
+  /** Chassis cuboid half extents and its centre height above the body origin. */
+  halfExtents: { x: number; y: number; z: number };
+  colliderY: number;
+  /** Centre of mass height above the body origin (negative = low). */
+  comY: number;
+  /** Principal inertia multiplier on top of the solid box value (bigger = lazier rotation). */
+  inertiaScale: number;
+  angularDamping: number;
+  /** Wheel centre x offset from the centre line, and the axle z positions. */
+  wheelX: number;
+  frontAxleZ: number;
+  rearAxleZ: number;
+  wheelRadius: number;
+  /** Hard point height above the body origin. */
+  connectionY: number;
+  suspension: {
+    restLength: number;
+    maxTravel: number;
+    stiffness: number;
+    compression: number;
+    relaxation: number;
+    maxForce: number;
+  };
+  /** Lateral grip stiffness of the tyres (Rapier `sideFrictionStiffness`). */
+  sideFrictionStiffness: number;
+  /** Anti-roll: torque (N m per rad) about the car's forward axis that levels the body. */
+  antiRoll: number;
+  /** Total engine force (N) over the four driven wheels at accelerator 1, and total brake at
+   * accelerator 0 in Rapier brake units (about 0.09 m/s2 of deceleration per unit). */
+  maxEngineForce: number;
+  /** The engine force fades linearly to zero at this forward speed (m/s), like a power curve. */
+  engineTopSpeed: number;
+  maxBrakeForce: number;
+  /** Accelerator value that means "coast"; below brakes, above drives. */
+  neutral: number;
+  /** Max steer angle: `steerAngleLow` at 0 m/s blending linearly to `steerAngleHigh` at
+   * `steerFalloffSpeed` and above. */
+  steerAngleLow: number;
+  steerAngleHigh: number;
+  steerFalloffSpeed: number;
+  /** Max rate of change of the wheel angle (rad/s). */
+  steerRate: number;
+  /** Height above the ground (m) a reset places the body origin at. */
+  resetHeight: number;
+}
+
+/** Grip and drag per surface. `drag` is a linear velocity damping (1/s) on the chassis,
+ * weighted by the share of wheels on the surface. */
+export interface SurfaceParams {
+  frictionSlip: number;
+  drag: number;
+}
 
 export interface GameConfig {
   /** Track / RNG seed. */
@@ -17,6 +85,8 @@ export interface GameConfig {
   trackMargin: number;
   /** Bodies below this world y (metres) count as out of bounds. */
   outOfBoundsY: number;
+  car: CarConfig;
+  surfaces: Record<SurfaceType, SurfaceParams>;
 }
 
 export const CONTROLLER_KINDS: readonly ControllerKind[] = ['keyboard', 'bot', 'remote'];
@@ -30,6 +100,47 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
   worldScale: 4,
   trackMargin: 3,
   outOfBoundsY: -5,
+  car: {
+    colour: 'Red',
+    modelScale: 2,
+    mass: 400,
+    halfExtents: { x: 0.55, y: 0.25, z: 1.35 },
+    colliderY: 0.225,
+    comY: -0.15,
+    inertiaScale: 1.5,
+    angularDamping: 2,
+    wheelX: 0.57,
+    frontAxleZ: 0.8,
+    rearAxleZ: -0.8,
+    wheelRadius: 0.282,
+    connectionY: 0.15,
+    suspension: {
+      restLength: 0.15,
+      maxTravel: 0.125,
+      stiffness: 60,
+      compression: 5.7,
+      relaxation: 8.5,
+      maxForce: 12000,
+    },
+    sideFrictionStiffness: 1,
+    antiRoll: 600,
+    maxEngineForce: 2800,
+    engineTopSpeed: 42,
+    maxBrakeForce: 60,
+    neutral: 0.5,
+    steerAngleLow: 0.8,
+    steerAngleHigh: 0.1,
+    steerFalloffSpeed: 30,
+    steerRate: 4,
+    resetHeight: 0.2,
+  },
+  surfaces: {
+    road: { frictionSlip: 3, drag: 0.05 },
+    kerb: { frictionSlip: 2.6, drag: 0.07 },
+    grass: { frictionSlip: 1.5, drag: 0.6 },
+    sand: { frictionSlip: 1.0, drag: 1.6 },
+    wall: { frictionSlip: 1.0, drag: 1.0 },
+  },
 };
 
 function parseBool(v: string): boolean | undefined {

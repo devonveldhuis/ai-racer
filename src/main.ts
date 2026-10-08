@@ -15,6 +15,11 @@ async function main(): Promise<void> {
     await runTrackView(params);
     return;
   }
+  if (params.get('view') === 'drive') {
+    const { runDriveView } = await import('./debug/driveView');
+    await runDriveView(params);
+    return;
+  }
   const config = parseUrlOverrides(window.location.search);
   await RAPIER.init();
 
