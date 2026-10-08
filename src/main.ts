@@ -10,6 +10,11 @@ async function main(): Promise<void> {
     await runTilesView(params);
     return;
   }
+  if (params.get('view') === 'track') {
+    const { runTrackView } = await import('./debug/trackView');
+    await runTrackView(params);
+    return;
+  }
   const config = parseUrlOverrides(window.location.search);
   await RAPIER.init();
 

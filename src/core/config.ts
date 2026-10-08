@@ -13,6 +13,10 @@ export interface GameConfig {
   maxSubSteps: number;
   /** Metres per model unit: converts GLB units (1 tile = 1 unit) into physics metres. */
   worldScale: number;
+  /** Empty grass cells added around the track bounds (the ground ends there). */
+  trackMargin: number;
+  /** Bodies below this world y (metres) count as out of bounds. */
+  outOfBoundsY: number;
 }
 
 export const CONTROLLER_KINDS: readonly ControllerKind[] = ['keyboard', 'bot', 'remote'];
@@ -24,6 +28,8 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
   physicsHz: 60,
   maxSubSteps: 5,
   worldScale: 4,
+  trackMargin: 3,
+  outOfBoundsY: -5,
 };
 
 function parseBool(v: string): boolean | undefined {
