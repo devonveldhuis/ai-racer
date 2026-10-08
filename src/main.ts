@@ -4,6 +4,12 @@ import { parseUrlOverrides } from './core/config';
 import { GameLoop } from './core/loop';
 
 async function main(): Promise<void> {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('view') === 'tiles') {
+    const { runTilesView } = await import('./debug/tilesView');
+    await runTilesView(params);
+    return;
+  }
   const config = parseUrlOverrides(window.location.search);
   await RAPIER.init();
 

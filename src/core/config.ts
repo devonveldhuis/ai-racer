@@ -11,6 +11,8 @@ export interface GameConfig {
   physicsHz: number;
   /** Max physics substeps per rendered frame (spiral-of-death guard). */
   maxSubSteps: number;
+  /** Metres per model unit: converts GLB units (1 tile = 1 unit) into physics metres. */
+  worldScale: number;
 }
 
 export const CONTROLLER_KINDS: readonly ControllerKind[] = ['keyboard', 'bot', 'remote'];
@@ -21,6 +23,7 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
   debug: false,
   physicsHz: 60,
   maxSubSteps: 5,
+  worldScale: 4,
 };
 
 function parseBool(v: string): boolean | undefined {
