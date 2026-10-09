@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GameLoop } from '../core/loop';
 import { ControllerHost, HOLD_INPUT } from './ControllerHost';
-import type { CarController, CarInput, Observation } from './types';
+import { blankObservation } from './testObservation';
+import type { CarController, CarInput } from './types';
 
 const DT = 1 / 60;
-const obs = (t: number): Observation => ({
-  t,
-  car: { accelerator: 0.5, steering: 0, speed: 0, surface: 'road' },
-});
+const obs = blankObservation;
 
 /** Steps the host `n` times at 60 Hz from `t0`; returns the final sim time. */
 function run(host: ControllerHost, n: number, t0 = 0): number {
@@ -211,5 +209,33 @@ describe('ControllerHost', () => {
     run(host, 10);
     expect(host.stats().decisions).toBe(10);
     expect(host.stats().latencyMean).toBe(1);
+  });
+
+  it('calls the observation factory lazily: only when a decision is made', () => {
+    const d = deferred();
+    const decide = vi.fn((): Promise<CarInput> => d.promise);
+    const { host } = make(decide, { decisionHz: 10 });
+    const factory = vi.fn((t: number) => obs(t));
+    let t = 0;
+    for (let i = 0; i < 120; i++) {
+      host.step(t, () => factory(t));
+      t += DT;
+    }
+    // 120 steps = 2 s = 20 due decisions; the first is in flight for the rest, so the 19
+    // skipped ones never build an observation.
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(host.stats().skipped).toBe(19);
+    expect(factory).toHaveBeenCalledTimes(1);
+
+    const sync = vi.fn((): CarInput => ({ accelerator: 0.5, steering: 0 }));
+    const second = make(sync, { decisionHz: 10 });
+    const factory2 = vi.fn((tt: number) => obs(tt));
+    t = 0;
+    for (let i = 0; i < 120; i++) {
+      second.host.step(t, () => factory2(t));
+      t += DT;
+    }
+    expect(factory2).toHaveBeenCalledTimes(20);
+    expect(sync).toHaveBeenCalledTimes(20);
   });
 });

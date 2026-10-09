@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { CarPhysics } from '../car/CarPhysics';
 import { maxSteerAngle } from '../car/control';
 import { ControllerHost, HOLD_INPUT } from '../control/ControllerHost';
-import { buildObservation, type CarController } from '../control/types';
+import { blankObservation } from '../control/testObservation';
+import type { CarController } from '../control/types';
 import { DEFAULT_CONFIG } from '../core/config';
 import { buildTrack, type LoadModelFn } from '../track/builder';
 import { Race, startPoseMetres } from './Race';
@@ -93,7 +94,7 @@ describe('race with the real car (scripted pure-pursuit driver)', () => {
     let heldMoved = 0;
     const startPos = car.getState().position;
     for (let step = 0; step < 60 * 120 && race.state !== 'finished'; step++) {
-      host.step(simTime, () => buildObservation(simTime, car.getState()));
+      host.step(simTime, () => blankObservation(simTime));
       car.setInput(host.enabled ? host.input : HOLD_INPUT);
       car.update(DT);
       world.step();

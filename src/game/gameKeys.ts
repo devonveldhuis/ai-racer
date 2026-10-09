@@ -1,4 +1,4 @@
-/** Game-level keys (not driving): reset, pause, restart, new track, camera, help. */
+/** Game-level keys (not driving): reset, pause, restart, new track, camera, help, sensor overlay. */
 
 export interface GameKeyHandlers {
   reset(): void;
@@ -7,6 +7,7 @@ export interface GameKeyHandlers {
   newTrack(): void;
   cycleCamera(): void;
   toggleHelp(): void;
+  toggleSensors(): void;
 }
 
 /** The part of `Window` the keys need; lets tests pass a fake. */
@@ -18,6 +19,11 @@ export interface KeyTarget {
 /** Installs the key handlers on `target`; returns a function that removes them. */
 export function installGameKeys(handlers: GameKeyHandlers, target: KeyTarget = window): () => void {
   const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'F1') {
+      e.preventDefault(); // not the browser's help
+      if (!e.repeat) handlers.toggleSensors();
+      return;
+    }
     if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
     switch (e.key.toLowerCase()) {
       case 'r':

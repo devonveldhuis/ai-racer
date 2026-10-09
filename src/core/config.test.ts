@@ -49,4 +49,27 @@ describe('parseUrlOverrides', () => {
     expect(c.physicsHz).toBe(60);
     expect(c.maxSubSteps).toBe(DEFAULT_CONFIG.maxSubSteps);
   });
+
+  it('parses fov and rays, ignoring invalid values', () => {
+    const c = parseUrlOverrides('?fov=120&rays=15');
+    expect(c.sensor.fovDeg).toBe(120);
+    expect(c.sensor.rayCount).toBe(15);
+    expect(c.sensor.sampleDistances).toEqual([5, 10, 20, 35]);
+    expect(DEFAULT_CONFIG.sensor).toMatchObject({ fovDeg: 90, rayCount: 9, maxRange: 40 });
+    for (const q of [
+      '?fov=0',
+      '?fov=abc',
+      '?fov=361',
+      '?fov=-5',
+      '?rays=0',
+      '?rays=2.5',
+      '?rays=500',
+      '?rays=x',
+    ]) {
+      const bad = parseUrlOverrides(q);
+      expect(bad.sensor.fovDeg).toBe(90);
+      expect(bad.sensor.rayCount).toBe(9);
+    }
+    expect(parseUrlOverrides('?rays=1').sensor.rayCount).toBe(1);
+  });
 });

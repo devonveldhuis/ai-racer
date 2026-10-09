@@ -33,6 +33,7 @@ function handlers(): GameKeyHandlers {
     newTrack: vi.fn(),
     cycleCamera: vi.fn(),
     toggleHelp: vi.fn(),
+    toggleSensors: vi.fn(),
   };
 }
 
@@ -55,6 +56,19 @@ describe('installGameKeys', () => {
     expect(h.newTrack).toHaveBeenCalledTimes(1);
     expect(h.cycleCamera).toHaveBeenCalledTimes(1);
     expect(h.toggleHelp).toHaveBeenCalledTimes(1);
+  });
+
+  it('toggles the sensor overlay on F1 and stops the browser help', () => {
+    const f = fakeTarget();
+    const h = handlers();
+    installGameKeys(h, f.target);
+    const preventDefault = vi.fn();
+    f.press('F1', { preventDefault } as unknown as Partial<KeyboardEvent>);
+    expect(h.toggleSensors).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    f.press('F1', { repeat: true, preventDefault } as unknown as Partial<KeyboardEvent>);
+    expect(h.toggleSensors).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalledTimes(2);
   });
 
   it('ignores repeats and modified keys', () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from '../core/config';
 import { KeyboardController, WindowKeySource, type KeySource } from './KeyboardController';
-import type { Observation } from './types';
+import { blankObservation } from './testObservation';
 
 const cfg = DEFAULT_CONFIG.keyboard;
 const N = DEFAULT_CONFIG.car.neutral;
@@ -11,10 +11,7 @@ function fakeKeys() {
   const src: KeySource = { isDown: (k) => down.has(k), dispose: vi.fn() };
   return { down, src };
 }
-const obs = (t: number): Observation => ({
-  t,
-  car: { accelerator: 0, steering: 0, speed: 0, surface: 'road' },
-});
+const obs = blankObservation;
 
 /** Advances the controller over `seconds` in `steps` equal steps, starting at `t0`. */
 function advance(c: KeyboardController, t0: number, seconds: number, steps: number) {

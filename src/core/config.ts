@@ -104,6 +104,20 @@ export interface RaceConfig {
   flipResetSeconds: number;
 }
 
+/** The ray-cone sensor (see `src/sensors/RayConeSensor.ts`). */
+export interface SensorConfig {
+  /** Total opening angle of the cone in degrees; rays span -fov/2 ... +fov/2. */
+  fovDeg: number;
+  /** Number of rays, ordered left to right. With 1 there is a single ray at 0 degrees. */
+  rayCount: number;
+  /** Distances (m) along each ray at which the ground is classified. */
+  sampleDistances: number[];
+  /** Length (m) of the obstacle cast. */
+  maxRange: number;
+  /** Height (m) above the car's position at which the obstacle cast starts. */
+  heightOffset: number;
+}
+
 export interface GameConfig {
   /** Track / RNG seed. */
   seed: number;
@@ -117,7 +131,8 @@ export interface GameConfig {
   keyboard: KeyboardConfig;
   camera: ChaseCameraConfig;
   race: RaceConfig;
-  /** Show debug overlays. */
+  sensor: SensorConfig;
+  /** Show debug overlays (the sensor overlay starts visible; `F1` toggles it). */
   debug: boolean;
   /** Fixed physics rate in Hz. */
   physicsHz: number;
@@ -156,6 +171,13 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
     fov: 60,
   },
   race: { laps: 1, countdownStepSeconds: 1, resetPenaltySeconds: 2, flipResetSeconds: 2 },
+  sensor: {
+    fovDeg: 90,
+    rayCount: 9,
+    sampleDistances: [5, 10, 20, 35],
+    maxRange: 40,
+    heightOffset: 0.5,
+  },
   debug: false,
   physicsHz: 60,
   maxSubSteps: 5,
@@ -213,7 +235,8 @@ function parseBool(v: string): boolean | undefined {
 }
 
 /**
- * Reads `seed`, `controller`, `mode` (control mode), `laps` and `debug` query params over the defaults.
+ * Reads `seed`, `controller`, `mode` (control mode), `laps`, `debug`, `fov` (degrees, 1 to 360)
+ * and `rays` (integer, 1 to 101) query params over the defaults.
  * Invalid values are ignored (the default is kept).
  */
 export function parseUrlOverrides(
@@ -251,6 +274,18 @@ export function parseUrlOverrides(
   if (debug !== null) {
     const b = parseBool(debug);
     if (b !== undefined) config.debug = b;
+  }
+
+  const fov = params.get('fov');
+  if (fov !== null && /^\d+(\.\d+)?$/.test(fov.trim())) {
+    const n = Number(fov.trim());
+    if (n >= 1 && n <= 360) config.sensor = { ...config.sensor, fovDeg: n };
+  }
+
+  const rays = params.get('rays');
+  if (rays !== null && /^\d+$/.test(rays.trim())) {
+    const n = Number(rays.trim());
+    if (n >= 1 && n <= 101) config.sensor = { ...config.sensor, rayCount: n };
   }
 
   return config;

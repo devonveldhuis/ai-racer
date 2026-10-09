@@ -125,6 +125,21 @@ export const HUD_CSS = /* css */ `
   background: rgba(0, 0, 0, 0.65); color: #fff; font: clamp(10px, 1.4vmin, 20px) / 1.35 ui-monospace, monospace;
   white-space: pre-wrap; max-width: 40em; pointer-events: none;
 }
+
+/* The F1 sensor panel: right side, under the minimap, above the speed readout. */
+.ar-sensor {
+  --fs: clamp(13px, 2vmin, 28px);
+  --mm: clamp(170px, 17vmin, 260px);
+  position: fixed; right: var(--fs); top: calc(var(--fs) * 1.6 + var(--mm));
+  max-width: calc(100vw - 2 * var(--fs)); max-height: calc(100vh - var(--fs) * 11.1 - var(--mm));
+  overflow: hidden; padding: 0.4em 0.6em; pointer-events: none; z-index: 3;
+  background: rgba(0, 0, 0, 0.62); color: #fff; border-radius: 0.5em;
+  font: 500 max(10px, calc(var(--fs) * 0.62)) / 1.3 ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.ar-sensor pre { margin: 0.3em 0 0; font: inherit; white-space: pre; }
+.ar-sensor-legend { display: flex; flex-wrap: wrap; gap: 0 0.9em; max-width: 46em; }
+.ar-sensor-legend span { white-space: nowrap; }
+.ar-sensor-legend i { display: inline-block; width: 0.8em; height: 0.8em; margin-right: 0.3em; border-radius: 50%; border: 1px solid rgba(255, 255, 255, 0.6); vertical-align: -0.1em; }
 `;
 
 /** Adds the stylesheet to `<head>` once; returns a function that removes it. */

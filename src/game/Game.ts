@@ -8,17 +8,25 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import { ChaseCamera } from '../camera/ChaseCamera';
 import { CarPhysics } from '../car/CarPhysics';
 import { CarView } from '../car/CarView';
-import type { CarPose } from '../car/types';
+import type { CarPose, CarState } from '../car/types';
 import { ControllerHost } from '../control/ControllerHost';
 import { createController } from '../control/registry';
-import { buildObservation, type CarController } from '../control/types';
+import {
+  buildObservation,
+  type CarController,
+  type Observation,
+  type RaySample,
+} from '../control/types';
 import type { ControllerKind, GameConfig } from '../core/config';
 import { GameLoop } from '../core/loop';
 import { TILE_CATALOG } from '../assets/tiles';
 import { preloadModels } from '../assets/loader';
+import { SensorOverlay } from '../debug/SensorOverlay';
 import { Dust } from '../fx/Dust';
 import { Race, startPoseMetres } from '../race/Race';
 import { recordResult } from '../race/results';
+import { formatObservation } from '../sensors/format';
+import { RayConeSensor } from '../sensors/RayConeSensor';
 import { buildTrack, type BuiltTrack } from '../track/builder';
 import { generateTrack } from '../track/generator';
 import { Hud, type HudSnapshot } from '../ui/Hud';
@@ -26,6 +34,8 @@ import { DisposeStack } from './DisposeStack';
 import { installGameKeys } from './gameKeys';
 
 const MAX_FRAME_DT = 0.1;
+/** Minimum wall-clock ms between updates of the sensor panel text (10 Hz). */
+const OVERLAY_TEXT_MS = 100;
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
@@ -46,6 +56,8 @@ interface Session {
   chase: ChaseCamera;
   race: Race;
   dust: Dust;
+  sensor: RayConeSensor;
+  overlay: SensorOverlay;
   simTime: number;
   dispose(): void;
 }
@@ -96,6 +108,26 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     };
   };
 
+  /** The full observation for the current step (senses the rays). */
+  const observe = (s: Session, st: CarState, rays: RaySample[]): Observation => {
+    const r = s.race;
+    return buildObservation(
+      r.raceTime,
+      st,
+      r.progress,
+      {
+        checkpoint: r.checkpointsPassed,
+        totalCheckpoints: r.checkpointCount,
+        lap: r.lap,
+        totalLaps: r.laps,
+      },
+      rays,
+    );
+  };
+
+  /** Whether the sensor overlay is shown (`F1`; on from the start with `?debug=1`). */
+  let sensorOverlayOn = config.debug;
+
   const buildSession = async (newSeed: number): Promise<Session> => {
     // Everything built so far is freed if a later step throws (e.g. a model fails to load).
     const cleanup = new DisposeStack();
@@ -136,6 +168,28 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       );
       const dust = cleanup.add(new Dust(config.car), () => dust.dispose());
       scene.add(dust.points);
+      const sensor = cleanup.add(
+        new RayConeSensor({
+          world,
+          track,
+          config: config.sensor,
+          ownBody: car.body,
+        }),
+        () => sensor.dispose(),
+      );
+      const overlay = cleanup.add(
+        new SensorOverlay({
+          scene,
+          rayCount: sensor.angles.length,
+          sampleCount: config.sensor.sampleDistances.length,
+          maxRange: config.sensor.maxRange,
+        }),
+        () => overlay.dispose(),
+      );
+      overlay.setVisible(sensorOverlayOn);
+      // The session's cleanup, filled in last: `release()` must run after every step that can
+      // throw, so a failure above or below frees what was built (in the catch).
+      let disposeSession: () => void = () => undefined;
       const s: Session = {
         seed: newSeed,
         track,
@@ -146,12 +200,15 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
         chase,
         race,
         dust,
+        sensor,
+        overlay,
         simTime: 0,
-        dispose: cleanup.release(),
+        dispose: () => disposeSession(),
       };
       race.events.on('finished', (result) => recordResult(result));
       applyReset(s, startPoseMetres(layout, S));
       race.startCountdown();
+      disposeSession = cleanup.release();
       return s;
     } catch (e) {
       cleanup.disposeAll();
@@ -230,6 +287,10 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     newTrack: () => void rebuild(Math.floor(Math.random() * 1e9)),
     cycleCamera: () => session?.chase.cycle(),
     toggleHelp: () => hud.toggleHelp(),
+    toggleSensors: () => {
+      sensorOverlayOn = !sensorOverlayOn;
+      session?.overlay.setVisible(sensorOverlayOn);
+    },
   });
 
   let panel: HTMLDivElement | null = null;
@@ -248,6 +309,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
   resize();
 
   let lastRender = performance.now();
+  let lastOverlayText = -Infinity;
   const snapshot: HudSnapshot = {
     time: 0,
     speed: 0,
@@ -271,7 +333,10 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       const s = session;
       if (!s) return;
       const { host, car, race } = s;
-      host.step(s.simTime, () => buildObservation(s.simTime, car.getState()));
+      host.step(s.simTime, () => {
+        const st = car.getState();
+        return observe(s, st, s.sensor.sense(st));
+      });
       car.setInput(host.input);
       car.update(dt);
       world.step();
@@ -322,6 +387,15 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
         snapshot.z = cs.position.z;
         snapshot.heading = cs.heading;
         hud.update(snapshot, now);
+        if (s.overlay.isVisible) {
+          // The overlay senses on its own every frame; its text updates at most 10 Hz.
+          const rays = s.sensor.sense(cs);
+          s.overlay.update(cs, rays);
+          if (now - lastOverlayText >= OVERLAY_TEXT_MS) {
+            lastOverlayText = now;
+            s.overlay.setText(formatObservation(observe(s, cs, rays)));
+          }
+        }
       }
       renderer.render(scene, camera);
       if (panel) {
@@ -373,6 +447,19 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     },
     get dust() {
       return session?.dust;
+    },
+    get sensor() {
+      return session?.sensor;
+    },
+    get overlay() {
+      return session?.overlay;
+    },
+    /** The observation a controller would get right now. */
+    observe: () => {
+      const s = session;
+      if (!s) return null;
+      const st = s.car.getState();
+      return observe(s, st, s.sensor.sense(st));
     },
     hud,
     renderer,
