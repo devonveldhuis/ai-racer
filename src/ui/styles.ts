@@ -89,7 +89,7 @@ export const HUD_CSS = /* css */ `
 .ar-badge { display: inline-block; margin: 0.2em 0 0.4em; padding: 0.15em 0.8em; border-radius: 1em; background: var(--ar-accent); color: #1a1500; text-shadow: none; font-weight: 800; }
 .ar-stats { display: grid; grid-template-columns: auto auto; column-gap: 2em; margin: 0.6em auto 1em; width: max-content; text-align: left; }
 .ar-stats .ar-num { text-align: right; }
-.ar-buttons { display: flex; gap: 0.8em; justify-content: center; }
+.ar-buttons { display: flex; flex-wrap: wrap; gap: 0.8em; justify-content: center; }
 .ar-btn {
   pointer-events: auto; cursor: pointer; font: inherit; color: #fff; padding: 0.55em 1.1em;
   background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.35); border-radius: 0.6em;

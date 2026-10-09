@@ -118,6 +118,14 @@ export interface SensorConfig {
   heightOffset: number;
 }
 
+/** The remote controller (`?controller=remote&url=...`). */
+export interface RemoteConfig {
+  /** http(s) endpoint that takes `{ observation }` and returns an action; `null` = not set. */
+  url: string | null;
+  /** Request timeout in milliseconds. */
+  timeoutMs: number;
+}
+
 export interface GameConfig {
   /** Track / RNG seed. */
   seed: number;
@@ -132,6 +140,9 @@ export interface GameConfig {
   camera: ChaseCameraConfig;
   race: RaceConfig;
   sensor: SensorConfig;
+  remote: RemoteConfig;
+  /** Capacity of the decision log (entries; oldest dropped first). Used for non-keyboard controllers. */
+  decisionLogCapacity: number;
   /** Show debug overlays (the sensor overlay starts visible; `F1` toggles it). */
   debug: boolean;
   /** Fixed physics rate in Hz. */
@@ -178,6 +189,8 @@ export const DEFAULT_CONFIG: Readonly<GameConfig> = {
     maxRange: 40,
     heightOffset: 0.5,
   },
+  remote: { url: null, timeoutMs: 2000 },
+  decisionLogCapacity: 20_000,
   debug: false,
   physicsHz: 60,
   maxSubSteps: 5,
@@ -236,7 +249,8 @@ function parseBool(v: string): boolean | undefined {
 
 /**
  * Reads `seed`, `controller`, `mode` (control mode), `laps`, `debug`, `fov` (degrees, 1 to 360)
- * and `rays` (integer, 1 to 101) query params over the defaults.
+ * and `rays` (integer, 1 to 101), `url` (http or https URL of the remote controller) and
+ * `timeoutMs` (integer, 1 to 600000) query params over the defaults.
  * Invalid values are ignored (the default is kept).
  */
 export function parseUrlOverrides(
@@ -288,5 +302,28 @@ export function parseUrlOverrides(
     if (n >= 1 && n <= 101) config.sensor = { ...config.sensor, rayCount: n };
   }
 
+  const url = params.get('url');
+  if (url !== null) {
+    const u = parseHttpUrl(url);
+    if (u !== null) config.remote = { ...config.remote, url: u };
+  }
+
+  const timeoutMs = params.get('timeoutMs');
+  if (timeoutMs !== null && /^\d+$/.test(timeoutMs.trim())) {
+    const n = Number(timeoutMs.trim());
+    if (n >= 1 && n <= 600_000) config.remote = { ...config.remote, timeoutMs: n };
+  }
+
   return config;
+}
+
+/** The trimmed URL if it parses and is http or https; otherwise `null`. */
+export function parseHttpUrl(v: string): string | null {
+  const s = v.trim();
+  try {
+    const u = new URL(s);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? s : null;
+  } catch {
+    return null;
+  }
 }

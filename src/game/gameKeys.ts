@@ -1,4 +1,4 @@
-/** Game-level keys (not driving): reset, pause, restart, new track, camera, help, sensor overlay. */
+/** Game-level keys (not driving): reset, pause, restart, new track, camera, help, sensor overlay, decision log download. */
 
 export interface GameKeyHandlers {
   reset(): void;
@@ -8,6 +8,7 @@ export interface GameKeyHandlers {
   cycleCamera(): void;
   toggleHelp(): void;
   toggleSensors(): void;
+  downloadLog(): void;
 }
 
 /** The part of `Window` the keys need; lets tests pass a fake. */
@@ -43,6 +44,9 @@ export function installGameKeys(handlers: GameKeyHandlers, target: KeyTarget = w
         break;
       case 'n':
         handlers.newTrack();
+        break;
+      case 'l':
+        handlers.downloadLog();
         break;
     }
   };

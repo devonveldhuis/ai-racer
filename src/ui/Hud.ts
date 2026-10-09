@@ -20,6 +20,8 @@ import { injectStyles } from './styles';
 export interface HudActions {
   restart(): void;
   newTrack(): void;
+  /** Saves the decision log (the finish screen button; only shown when the log has entries). */
+  downloadLog?(): void;
 }
 
 export interface HudOptions {
@@ -36,6 +38,8 @@ export interface HudBinding {
   worldScale: number;
   seed: number;
   controller: string;
+  /** The session's decision log, if it records one. */
+  decisionLog?: { readonly size: number } | null;
 }
 
 /** The per-frame values the HUD shows. */
@@ -68,7 +72,7 @@ const SURFACE_COLORS: Record<SurfaceType | 'air', string> = {
 
 const SLOW_INTERVAL_MS = 50;
 const HELP_TEXT =
-  'W/S throttle·brake   A/D steer   R reset   Enter restart   N new   Esc pause   C camera   H help';
+  'W/S throttle·brake   A/D steer   R reset   Enter restart   N new   Esc pause   C camera   H help   L decision log';
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -99,6 +103,7 @@ export class Hud {
   private readonly finishTotal = el('div', 'ar-total ar-num');
   private readonly finishBadge = el('div', 'ar-badge', 'New best!');
   private readonly finishStats = el('div', 'ar-stats');
+  private readonly logBtn = el('button', 'ar-btn', 'Download decision log (JSONL)');
 
   private readonly setTime: (s: string) => void;
   private readonly setBest: (s: string) => void;
@@ -215,7 +220,12 @@ export class Hud {
       btn.addEventListener('mousedown', (e) => e.preventDefault());
       btn.addEventListener('click', fn);
     }
-    buttons.append(restartBtn, newBtn);
+    this.logBtn.type = 'button';
+    this.logBtn.tabIndex = -1;
+    this.logBtn.hidden = true;
+    this.logBtn.addEventListener('mousedown', (e) => e.preventDefault());
+    this.logBtn.addEventListener('click', () => this.actions.downloadLog?.());
+    buttons.append(restartBtn, newBtn, this.logBtn);
     finish.append(
       el('h2', undefined, 'Finished'),
       this.finishTotal,
@@ -421,6 +431,7 @@ export class Hud {
     const isBest = prevBest !== null && result.totalTime < prevBest;
     this.finishTotal.textContent = formatTime(result.totalTime);
     this.finishBadge.hidden = !isBest;
+    this.logBtn.hidden = !((this.binding?.decisionLog?.size ?? 0) > 0 && this.actions.downloadLog);
     const rows: [string, string][] = [];
     result.lapTimes.forEach((t, i) => rows.push([`Lap ${i + 1}`, formatTime(t)]));
     rows.push(['Resets', String(result.resets)]);

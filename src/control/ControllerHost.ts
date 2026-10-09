@@ -6,11 +6,13 @@
  * - Sync results apply in the same step; async ones in the first step after they resolve.
  * - At most one decision is in flight; due decisions are skipped (and counted) meanwhile.
  * - Results are validated and clamped; bad fields, errors and rejections keep the last input.
+ *   A decision that throws, rejects or returns a broken thenable counts as one error.
  * - `enabled = false` still lets the controller decide, but the car gets the hold input.
  * - `lockstep`: `blocking` is true while a decision is pending; the loop must not advance.
  */
 import { sanitizeInput } from '../car/control';
 import type { ControlMode } from '../core/config';
+import type { DecisionLog } from './DecisionLog';
 import type { CarInput, CarController, Observation } from './types';
 
 export interface ControllerHostOptions {
@@ -22,6 +24,8 @@ export interface ControllerHostOptions {
   now?: () => number;
   /** Number of latency samples kept. Default 120. */
   statsWindow?: number;
+  /** Records every decision (and failure) when set. */
+  log?: DecisionLog;
 }
 
 export interface HostStats {
@@ -41,10 +45,18 @@ export const HOLD_INPUT: Readonly<CarInput> = { accelerator: 0, steering: 0 };
 
 const EPS = 1e-9;
 
+/** Whether `v` has a `then` function. Reading a hostile getter may throw: that counts as no. */
 function isThenable(v: unknown): v is PromiseLike<CarInput> {
-  return (
-    typeof v === 'object' && v !== null && typeof (v as PromiseLike<unknown>).then === 'function'
-  );
+  if (typeof v !== 'object' || v === null) return false;
+  try {
+    return typeof (v as PromiseLike<unknown>).then === 'function';
+  } catch {
+    return false;
+  }
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 export class ControllerHost {
@@ -55,11 +67,12 @@ export class ControllerHost {
   private readonly neutral: number;
   private readonly now: () => number;
   private readonly window: number;
+  private readonly log: DecisionLog | undefined;
   private current: CarInput;
   private nextIndex = 0;
   private inFlight = false;
   private epoch = 0;
-  private ready: { value: unknown } | null = null;
+  private ready: { value: unknown; obs: Observation; latency: number } | null = null;
   private decisions = 0;
   private skipped = 0;
   private errors = 0;
@@ -73,6 +86,7 @@ export class ControllerHost {
     this.neutral = opts.neutral ?? 0.5;
     this.now = opts.now ?? (() => performance.now());
     this.window = opts.statsWindow ?? 120;
+    this.log = opts.log;
     this.current = { accelerator: this.neutral, steering: 0 };
   }
 
@@ -90,7 +104,7 @@ export class ControllerHost {
     if (this.ready) {
       const r = this.ready;
       this.ready = null;
-      this.accept(r.value);
+      this.accept(r.value, r.obs, r.latency);
     }
     if (simTime + EPS < this.nextIndex * this.period) return;
     // Next due time is the next multiple of the period after now (never a backlog).
@@ -101,33 +115,40 @@ export class ControllerHost {
     }
     this.decisions++;
     const start = this.now();
-    let result: CarInput | Promise<CarInput>;
+    let obs: Observation;
+    let result: unknown;
     try {
-      result = this.controller.decide(obsFactory());
+      obs = obsFactory();
+      result = this.controller.decide(obs);
     } catch (e) {
-      this.fail(e);
+      this.fail(e, undefined, this.now() - start);
       return;
     }
     if (isThenable(result)) {
       this.inFlight = true;
       const epoch = this.epoch;
-      result.then(
+      // `Promise.resolve` adopts the thenable in a microtask, so a `then` that throws becomes
+      // a rejection instead of escaping this call.
+      Promise.resolve(result).then(
         (value) => {
           if (epoch !== this.epoch) return;
           this.inFlight = false;
-          this.sample(start);
-          this.ready = { value };
+          const latency = this.now() - start;
+          this.sample(latency);
+          this.ready = { value, obs, latency };
         },
         (e: unknown) => {
           if (epoch !== this.epoch) return;
           this.inFlight = false;
-          this.sample(start);
-          this.fail(e);
+          const latency = this.now() - start;
+          this.sample(latency);
+          this.fail(e, obs, latency);
         },
       );
     } else {
-      this.sample(start);
-      this.accept(result);
+      const latency = this.now() - start;
+      this.sample(latency);
+      this.accept(result, obs, latency);
     }
   }
 
@@ -159,21 +180,31 @@ export class ControllerHost {
     };
   }
 
-  private sample(start: number): void {
-    this.latencies.push(this.now() - start);
+  private sample(latency: number): void {
+    this.latencies.push(latency);
     if (this.latencies.length > this.window) this.latencies.shift();
   }
 
-  private accept(value: unknown): void {
+  private accept(value: unknown, obs: Observation, latency: number): void {
     if (typeof value !== 'object' || value === null) {
-      this.fail(new Error('decide() returned no input object'));
+      this.fail(new Error('decide() returned no input object'), obs, latency);
       return;
     }
     this.current = sanitizeInput(this.current, value as Partial<CarInput>);
+    this.log?.push({ t: obs.t, observation: obs, action: { ...this.current }, latencyMs: latency });
   }
 
-  private fail(e: unknown): void {
+  private fail(e: unknown, obs: Observation | undefined, latency: number): void {
     this.errors++;
+    if (obs) {
+      this.log?.push({
+        t: obs.t,
+        observation: obs,
+        action: { ...this.current },
+        latencyMs: latency,
+        error: errorText(e),
+      });
+    }
     if (!this.warned) {
       this.warned = true;
       console.warn(`Controller "${this.controller.name}" failed; keeping the previous input.`, e);

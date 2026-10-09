@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GameLoop } from '../core/loop';
+import { DecisionLog } from './DecisionLog';
 import { ControllerHost, HOLD_INPUT } from './ControllerHost';
 import { blankObservation } from './testObservation';
 import type { CarController, CarInput } from './types';
@@ -237,5 +238,154 @@ describe('ControllerHost', () => {
     }
     expect(factory2).toHaveBeenCalledTimes(20);
     expect(sync).toHaveBeenCalledTimes(20);
+  });
+});
+
+describe('ControllerHost hardening', () => {
+  const quiet = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const flush = async () => {
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+  };
+
+  it('counts a synchronous throw as one error and keeps the last input', () => {
+    const warn = quiet();
+    let n = 0;
+    const { host } = make(() => {
+      if (n++ === 1) throw new Error('boom');
+      return { accelerator: 1, steering: 0.5 };
+    });
+    run(host, 1);
+    expect(host.input).toEqual({ accelerator: 1, steering: 0.5 });
+    run(host, 6, DT);
+    run(host, 6, 0.1);
+    expect(host.stats().errors).toBe(1);
+    expect(host.input).toEqual({ accelerator: 1, steering: 0.5 });
+    warn.mockRestore();
+  });
+
+  it('counts a rejecting promise as an error and keeps the last input', async () => {
+    const warn = quiet();
+    let n = 0;
+    const { host } = make(() =>
+      n++ === 0
+        ? Promise.resolve({ accelerator: 0.9, steering: 0.1 })
+        : Promise.reject(new Error('no')),
+    );
+    run(host, 1);
+    await flush();
+    run(host, 1, DT);
+    expect(host.input).toEqual({ accelerator: 0.9, steering: 0.1 });
+    run(host, 7, 0.1 - DT);
+    await flush();
+    expect(host.stats().errors).toBe(1);
+    expect(host.input).toEqual({ accelerator: 0.9, steering: 0.1 });
+    // A failed decision frees the slot: the next due decision is made.
+    run(host, 1, 0.2);
+    expect(host.stats().decisions).toBe(3);
+    warn.mockRestore();
+  });
+
+  it('survives a thenable whose then throws synchronously', async () => {
+    const warn = quiet();
+    const bad = {
+      then() {
+        throw new Error('then exploded');
+      },
+    };
+    const { host } = make(() => bad as unknown as Promise<CarInput>, { mode: 'lockstep' });
+    expect(() => host.step(0, () => obs(0))).not.toThrow();
+    expect(host.blocking).toBe(true);
+    await flush();
+    expect(host.blocking).toBe(false);
+    expect(host.stats().errors).toBe(1);
+    expect(host.input).toEqual({ accelerator: 0.5, steering: 0 });
+    warn.mockRestore();
+  });
+
+  it('survives a thenable whose then getter throws', async () => {
+    const warn = quiet();
+    const bad = {
+      get then(): never {
+        throw new Error('getter exploded');
+      },
+    };
+    const { host } = make(() => bad as unknown as CarInput);
+    expect(() => host.step(0, () => obs(0))).not.toThrow();
+    await flush();
+    // Not a thenable, so it is a (useless) object result: the input stays neutral either way.
+    expect(host.input).toEqual({ accelerator: 0.5, steering: 0 });
+    warn.mockRestore();
+  });
+
+  it('accepts a well-behaved custom thenable', async () => {
+    const { host } = make(
+      () =>
+        ({
+          then: (ok: (v: CarInput) => void) => ok({ accelerator: 0.8, steering: -0.4 }),
+        }) as unknown as Promise<CarInput>,
+    );
+    host.step(0, () => obs(0));
+    await flush();
+    host.step(DT, () => obs(DT));
+    expect(host.input).toEqual({ accelerator: 0.8, steering: -0.4 });
+  });
+
+  it('survives an observation factory that throws', () => {
+    const warn = quiet();
+    const { host } = make(() => ({ accelerator: 1, steering: 0 }));
+    expect(() =>
+      host.step(0, () => {
+        throw new Error('sensor failed');
+      }),
+    ).not.toThrow();
+    expect(host.stats().errors).toBe(1);
+    warn.mockRestore();
+  });
+});
+
+describe('ControllerHost decision log', () => {
+  it('records sync decisions with the clamped action and latency', () => {
+    const log = new DecisionLog(100);
+    let clock = 0;
+    const { host } = make(() => ({ accelerator: 2, steering: -0.5 }), {
+      log,
+      now: () => (clock += 3),
+    });
+    run(host, 1);
+    const [e] = log.entries();
+    expect(e).toMatchObject({ t: 0, action: { accelerator: 1, steering: -0.5 }, latencyMs: 3 });
+    expect(e?.error).toBeUndefined();
+    expect(e?.observation).toEqual(obs(0));
+  });
+
+  it('records async results when they are applied and failures with an error', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const log = new DecisionLog(100);
+    const d = [deferred(), deferred()];
+    let i = 0;
+    const { host } = make(() => d[i++]!.promise, { log });
+    host.step(0, () => obs(0));
+    d[0]!.resolve({ accelerator: 0.9, steering: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(log.size).toBe(0);
+    host.step(DT, () => obs(DT));
+    expect(log.size).toBe(1);
+    run(host, 7, 0.1);
+    d[1]!.reject(new Error('late'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(log.entries().map((x) => x.error)).toEqual([undefined, 'late']);
+    expect(log.entries()[1]?.action).toEqual({ accelerator: 0.9, steering: 0 });
+    warn.mockRestore();
+  });
+
+  it('every JSONL line parses back to the stored entry', () => {
+    const log = new DecisionLog(100);
+    const { host } = make(() => ({ accelerator: 0.7, steering: 0.2 }), { log });
+    run(host, 120);
+    const lines = log.toJSONL().trimEnd().split('\n');
+    expect(lines).toHaveLength(20);
+    expect(lines.map((l) => JSON.parse(l))).toEqual(log.entries());
   });
 });

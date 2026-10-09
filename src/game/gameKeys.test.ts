@@ -34,6 +34,7 @@ function handlers(): GameKeyHandlers {
     cycleCamera: vi.fn(),
     toggleHelp: vi.fn(),
     toggleSensors: vi.fn(),
+    downloadLog: vi.fn(),
   };
 }
 
@@ -49,6 +50,8 @@ describe('installGameKeys', () => {
     f.press('n');
     f.press('c');
     f.press('h');
+    f.press('l');
+    f.press('L');
     f.press('x');
     expect(h.reset).toHaveBeenCalledTimes(2);
     expect(h.pause).toHaveBeenCalledTimes(1);
@@ -56,6 +59,7 @@ describe('installGameKeys', () => {
     expect(h.newTrack).toHaveBeenCalledTimes(1);
     expect(h.cycleCamera).toHaveBeenCalledTimes(1);
     expect(h.toggleHelp).toHaveBeenCalledTimes(1);
+    expect(h.downloadLog).toHaveBeenCalledTimes(2);
   });
 
   it('toggles the sensor overlay on F1 and stops the browser help', () => {

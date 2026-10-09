@@ -10,7 +10,8 @@
     "test": "vitest run",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "mock-ai": "node tools/mock-ai-server.ts"
   },
   "dependencies": {
     "@dimforge/rapier3d-compat": "^0.21.0",

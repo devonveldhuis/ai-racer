@@ -49,7 +49,10 @@ export interface RaySample {
  * m/s and everything else to 0.001.
  */
 export interface Observation {
-  /** Race time in seconds: 0 until GO, frozen while paused (not the simulation time). */
+  /**
+   * Race time in simulation seconds since GO: 0 until GO, frozen while paused. It excludes
+   * reset penalties, while the HUD's displayed time includes them.
+   */
   t: number;
   car: {
     /** Last applied input. */

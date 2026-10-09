@@ -72,4 +72,40 @@ describe('parseUrlOverrides', () => {
     }
     expect(parseUrlOverrides('?rays=1').sensor.rayCount).toBe(1);
   });
+
+  it('parses url and timeoutMs for the remote controller', () => {
+    const c = parseUrlOverrides('?controller=remote&url=http://localhost:8787&timeoutMs=500');
+    expect(c.controller).toBe('remote');
+    expect(c.remote).toEqual({ url: 'http://localhost:8787', timeoutMs: 500 });
+    expect(parseUrlOverrides('?url=https%3A%2F%2Fexample.com%2Fdrive%3Fx%3D1').remote.url).toBe(
+      'https://example.com/drive?x=1',
+    );
+    expect(parseUrlOverrides('?url=%20http://127.0.0.1:9/%20').remote.url).toBe(
+      'http://127.0.0.1:9/',
+    );
+  });
+
+  it('defaults the remote to no url and a 2000 ms timeout', () => {
+    expect(parseUrlOverrides('').remote).toEqual({ url: null, timeoutMs: 2000 });
+  });
+
+  it('ignores invalid and non-http(s) urls', () => {
+    for (const bad of [
+      '',
+      'localhost:8787',
+      'ftp://x/',
+      'javascript:alert(1)',
+      'file:///etc/passwd',
+      'not a url',
+    ]) {
+      expect(parseUrlOverrides(`?url=${encodeURIComponent(bad)}`).remote.url).toBeNull();
+    }
+  });
+
+  it('ignores invalid timeoutMs', () => {
+    for (const bad of ['0', '-5', '1.5', 'abc', '', '600001']) {
+      expect(parseUrlOverrides(`?timeoutMs=${bad}`).remote.timeoutMs).toBe(2000);
+    }
+    expect(parseUrlOverrides('?timeoutMs=600000').remote.timeoutMs).toBe(600000);
+  });
 });

@@ -9,6 +9,7 @@ import { ChaseCamera } from '../camera/ChaseCamera';
 import { CarPhysics } from '../car/CarPhysics';
 import { CarView } from '../car/CarView';
 import type { CarPose, CarState } from '../car/types';
+import { DecisionLog } from '../control/DecisionLog';
 import { ControllerHost } from '../control/ControllerHost';
 import { createController } from '../control/registry';
 import {
@@ -53,6 +54,8 @@ interface Session {
   view: CarView;
   controller: CarController;
   host: ControllerHost;
+  /** Decisions of a non-keyboard controller (`null` for the keyboard). */
+  log: DecisionLog | null;
   chase: ChaseCamera;
   race: Race;
   dust: Dust;
@@ -79,6 +82,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     actions: {
       restart: () => void rebuild(seed),
       newTrack: () => void rebuild(Math.floor(Math.random() * 1e9)),
+      downloadLog: () => downloadLog(),
     },
     neutral: config.car.neutral,
   });
@@ -157,10 +161,13 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       const controller = cleanup.add(createController(config.controller, { config }), () =>
         controller.dispose?.(),
       );
+      const log =
+        controller.name === 'keyboard' ? null : new DecisionLog(config.decisionLogCapacity);
       const host = new ControllerHost(controller, {
         decisionHz: config.decisionHz[controller.name as ControllerKind] ?? 10,
         mode: config.controlMode,
         neutral: config.car.neutral,
+        log: log ?? undefined,
       });
       host.enabled = false;
       const chase = cleanup.add(new ChaseCamera(camera, view.root, config.camera, canvas), () =>
@@ -197,6 +204,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
         view,
         controller,
         host,
+        log,
         chase,
         race,
         dust,
@@ -261,6 +269,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
         worldScale: S,
         seed: s.seed,
         controller: s.controller.name,
+        decisionLog: s.log,
       });
       hud.hideToast();
     } catch (e) {
@@ -280,6 +289,21 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     }
   };
 
+  /** Saves the session's decision log as `decisions-<seed>-<controller>.jsonl` (if it has entries). */
+  const downloadLog = (): void => {
+    const s = session;
+    if (!s?.log || s.log.size === 0) return;
+    const blob = new Blob([s.log.toJSONL()], { type: 'application/x-ndjson' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `decisions-${s.seed}-${s.controller.name}.jsonl`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  };
+
   const removeKeys = installGameKeys({
     reset: () => session?.race.requestReset('manual'),
     pause: () => session?.race.togglePause(),
@@ -291,6 +315,7 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
       sensorOverlayOn = !sensorOverlayOn;
       session?.overlay.setVisible(sensorOverlayOn);
     },
+    downloadLog,
   });
 
   let panel: HTMLDivElement | null = null;
@@ -454,6 +479,9 @@ export async function runGame(config: GameConfig): Promise<GameHandle> {
     get overlay() {
       return session?.overlay;
     },
+    /** The decision log as JSONL text (empty when there is none). */
+    decisionLogText: () => session?.log?.toJSONL() ?? '',
+    downloadLog,
     /** The observation a controller would get right now. */
     observe: () => {
       const s = session;
